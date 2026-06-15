@@ -191,14 +191,26 @@ def createDatasetFromPIC(picFile: str,
     #2D PIF dataset
     #input_keys = ["pos_weakLandau_pif_500k", "pos_strongLandau_pif_500k", "pos_tsi_pif_500k", "pos_bti_pif_500k", "pos_cyclotron_pif_500k"]
     #output_keys = ["Eout_weakLandau_pif_500k", "Eout_strongLandau_pif_500k", "Eout_tsi_pif_500k", "Eout_bti_pif_500k", "Eout_cyclotron_pif_500k"]
+
+    #2D PEPC dataset
+    #input_keys = ["inp_weakLandau_pepc_500k"]
+    #output_keys = ["out_weakLandau_pepc_500k"]
+
+    #3D BH + PIF dataset
+    #input_keys = ["pos_weakLandau_bh_100k", "pos_strongLandau_pif_100k", "pos_penning_pif_100k"]
+    #output_keys = ["Eout_weakLandau_bh_100k", "Eout_strongLandau_pif_100k", "Eout_penning_pif_100k"]
+
+    #3D BH + PIF + PIC dataset
+    input_keys = ["pos_weakLandau_bh_100k", "pos_strongLandau_bh_100k", "pos_tsi_pif_100k", "pos_bti_pif_100k", "pos_penning_pic_100k"]
+    output_keys = ["Eout_weakLandau_bh_100k", "Eout_strongLandau_bh_100k", "Eout_tsi_pif_100k", "Eout_bti_pif_100k", "Eout_penning_pic_100k"]
     
     #1D PIF dataset
     #input_keys = ["pos_weakLandau", "pos_strongLandau", "pos_tsi", "pos_bti"]
     #output_keys = ["Eout_weakLandau", "Eout_strongLandau", "Eout_tsi", "Eout_bti"]
 
     #3D PIF dataset
-    input_keys = ["pos_strongLandau_pif_100k", "pos_penning_pif_100k"]
-    output_keys = ["Eout_strongLandau_pif_100k", "Eout_penning_pif_100k"]
+    #input_keys = ["pos_strongLandau_pif_100k", "pos_penning_pif_100k"]
+    #output_keys = ["Eout_strongLandau_pif_100k", "Eout_penning_pif_100k"]
 
     # Load inputs and outputs
     inputs_list = load_h5Dataset(picFile, input_keys, iEnd, step)
@@ -216,14 +228,15 @@ def createDatasetFromPIC(picFile: str,
 
 
     #q1_xsize = sum(t.shape[0] for t in inputs_list[:3])
-    q1_xsize = sum(t.shape[0] for t in inputs_list[:1])
+    q1_xsize = sum(t.shape[0] for t in inputs_list[:3])
     # Scale by \alpha = Q_tot for 1D, \alpha = Q_tot / sqrt(L_x*L_y) for 2D and \alpha = Q_tot / (L_x*L_y*L_z)^(2/3) for 3D. 
     # For weakLandau, strongLandau, bump-on-tail instability and two-stream instability it boils down to 
     # \alpha = -L irrespective of dimensions
     outputs[:q1_xsize,:,:] = outputs[:q1_xsize,:,:] / (-(2 * np.pi / 0.5))
-    outputs[q1_xsize:,:,:] = outputs[q1_xsize:,:,:] / (-(1562.5 / (25**2))) # Q_tot = -1562.5 and L_x=L_y=L_z=25 for Penning trap
-    #outputs[q1_xsize:(q1_xsize + inputs_list[3].shape[0]),:,:] = outputs[q1_xsize:(q1_xsize + inputs_list[3].shape[0]),:,:] / (-(2 * np.pi / 0.21))
+    outputs[q1_xsize:(q1_xsize + inputs_list[3].shape[0]),:,:] = outputs[q1_xsize:(q1_xsize + inputs_list[3].shape[0]),:,:] / (-(2 * np.pi / 0.21))
+    #outputs[q1_xsize:,:,:] = outputs[q1_xsize:,:,:] / (-(1562.5 / (25**2))) # Q_tot = -1562.5 and L_x=L_y=L_z=25 for Penning trap
     #outputs[(q1_xsize + inputs_list[3].shape[0]):,:,:] = outputs[(q1_xsize + inputs_list[3].shape[0]):,:,:] / (-1)
+    outputs[(q1_xsize + inputs_list[3].shape[0]):,:,:] = outputs[(q1_xsize + inputs_list[3].shape[0]):,:,:] / (-(1562.5 / (25**2))) # Q_tot = -1562.5 and L_x=L_y=L_z=25 for Penning trap
 
     # Shuffle timestep
     inputs = inp
@@ -235,8 +248,8 @@ def createDatasetFromPIC(picFile: str,
     inputs[:, 0, :] = normalize_per_sample(inputs[:, 0, :])
     outputs[:, 0, :], meanEx, stdEx = normalize_global_zscore(outputs[:, 0, :])
     if nDim > 1:
-         inputs[:, 1, :] = normalize_per_sample(inputs[:, 1, :])
-         outputs[:, 1, :], meanEy, stdEy = normalize_global_zscore(outputs[:, 1, :])
+        inputs[:, 1, :] = normalize_per_sample(inputs[:, 1, :])
+        outputs[:, 1, :], meanEy, stdEy = normalize_global_zscore(outputs[:, 1, :])
     if nDim > 2:
         inputs[:, 2, :] = normalize_per_sample(inputs[:, 2, :])
         outputs[:, 2, :], meanEz, stdEz = normalize_global_zscore(outputs[:, 2, :])

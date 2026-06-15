@@ -175,7 +175,7 @@ def enable_tf32_only_on_a100():
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
 
-        print_rank0(f"TF32 enabled on A100: {name}")
+        #print_rank0(f"TF32 enabled on A100: {name}")
     else:
         print_rank0(f"Not an A100 → TF32 NOT enabled: {name}")
 

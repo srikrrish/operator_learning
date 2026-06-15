@@ -29,6 +29,7 @@ class PICVisualizer:
         self.eval_dir.mkdir(parents=True, exist_ok=True)
         self.QM = args.Qm
         self.N = args.nParticle
+        #self.QM = cp.concatenate([-cp.ones(self.N//2),cp.ones(self.N//2)],axis=0)
         self.NG = args.NG
         self.DT = args.dt
         self.T = args.T
@@ -62,6 +63,8 @@ class PICVisualizer:
             self.rho_back = - self.Q * self.N / self.L[0]                          # background rho     
         elif self.dim == 2:
             self.Q = self.L[0] * self.L[1] / (self.QM * self.N)  
+            #self.Q = self.L[0] * self.L[1] / (2 * self.QM * self.N)  
+            #self.Q = self.QM
             self.rho_back = - self.Q * self.N / (self.L[0] * self.L[1])
         else:
             self.Q = self.L[0] * self.L[1] * self.L[2] / (self.QM * self.N)  
@@ -152,6 +155,13 @@ class PICVisualizer:
             T1 = None
             T2 = None
 
+        #output_keys = "out_weakLandau_pepc_500k"
+        #file_path = "/p/project1/hai_1073/muralikrishnan1/Datasets_2D_electrostatic_plasma/2D_PEPC_weak_landau_500k_with_q.h5"
+
+        #with h5py.File(file_path, "r") as f:
+        #    data = f[output_keys][:, :]
+        #    Efield_pepc = cp.array(data, dtype=cp.float32)
+        #    Efield_pepc = Efield_pepc.swapaxes(-1,-2)
 
         for it in range(self.NT):
            
@@ -164,6 +174,9 @@ class PICVisualizer:
             if ml_acc and model is not None:
                 t0 = time.time()
                 inputs = xp[None, :, :].copy() # [batch=1, channel=dim, particles]
+                #breakpoint()
+                #inputs = cp.concatenate([inputs, self.Q[None, None, :]], axis=1) 
+                #inputs = cp.concatenate([inputs, self.Q*cp.ones((1, 1, self.N))], axis=1) 
                 inputs[:, 0, :] = normalize_per_sample(inputs[:, 0, :])
                 
                 if(self.dim > 1):
@@ -173,6 +186,7 @@ class PICVisualizer:
             
                 prediction = model(inputs) # [1, channel=dim, particles]
                 Efieldparticle = prediction.squeeze()
+                #Efieldparticle = Efield_pepc[it, :, :].squeeze()
                 if(self.dim == 1):
                     Efieldparticle = Efieldparticle * data_output_std + data_output_mean
                     #Scale by normalization factor \alpha = Q_tot in 1D for the current problem
@@ -182,8 +196,9 @@ class PICVisualizer:
                 elif(self.dim == 2):
                     Efieldparticle[0] = Efieldparticle[0] * data_output_std[0] + data_output_mean[0]
                     Efieldparticle[1] = Efieldparticle[1] * data_output_std[1] + data_output_mean[1]
-                    #Scale by normalization factor \alpha = Q_tot / sqrt(L_x * L_y) in 2D for the current problem
+                    ###Scale by normalization factor \alpha = Q_tot / sqrt(L_x * L_y) in 2D for the current problem
                     Efieldparticle[:,:] = Efieldparticle[:,:] * ((self.Q * self.N)/cp.sqrt(self.Ln[0] * self.Ln[1]))
+                    ###Efieldparticle[:,:] = Efieldparticle[:,:] / cp.sqrt(3)
                     if(self.testCase != 'cyclotron'):
                         #Subtract volume average of electric field for periodic compatibility 
                         Efieldparticle[0] = Efieldparticle[0] - ((1/self.N) * cp.sum(Efieldparticle[0]))
@@ -433,9 +448,9 @@ class PICVisualizer:
                 plt.ylim(1e-5,1e-1)
         elif(self.dim == 2):
             if(label == 'strongLandau'):
-                plt.ylim(1e-3,1e2)
+                plt.ylim(1e-3,None)
             if(label == 'weakLandau'):
-                plt.ylim(1e-3,1)
+                plt.ylim(1e-4,None)
         else:
             if(label == 'strongLandau'):
                 plt.ylim(1e-3,1e4)
@@ -615,12 +630,12 @@ class PICVisualizer:
             if(label == 'tsi'):
                 ax.set_ylim([1e-4,1e3])
             else:
-                ax.set_ylim([1e-2,1e3])
+                ax.set_ylim([None,1e2])
         else:
             if(label == 'tsi'):
                 ax.set_ylim([1e-4,1e4])
             else:
-                ax.set_ylim([1e-2,1e4])
+                ax.set_ylim([1e1,1e4])
         if EzPred is not None:
             plt.ylabel(r'$\int E_x^2 dV$, $\int E_y^2 dV$, $\int E_z^2 dV$')
         elif EyPred is not None:

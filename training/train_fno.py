@@ -89,6 +89,7 @@ class FourierNeuralOperator:
             self.tp_size = parallel_strategy.get("tp_size", 2) if self.TP_enabled else 1
             self.dp_size = 1
             self.tp_mesh = None
+            self.effective_batches = 1
     
             if self.DDP_enabled or self.TP_enabled:
                 self.communicator = Communicator(gpus_per_node, self.rank)
