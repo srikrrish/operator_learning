@@ -9,6 +9,9 @@ import numpy as np
 import cupy as cp
 from energy import kinetic
 from initial_conditions import findsource
+import torch
+from utilities import torch_to_cp, cp_to_torch
+from torch.func import jvp
 
 def accelerate(M: cp.ndarray, 
                E: cp.ndarray,
@@ -65,7 +68,43 @@ def accelerateML(E: cp.ndarray, wp: float, QM: float):
     """
     a = E * QM / wp
     
-    return a 
+    return a
+
+def make_Jv(model, x_cp, DT, QM, Q, N, std, mean):
+
+    def Jv(dx_cp):
+        inputs = x_cp[None, :, :].copy() # [batch=1, channel=dim, particles]
+        inputs[:, 0, :] = normalize_per_sample(inputs[:, 0, :])
+        x_t = cp_to_torch(inputs)
+        dx_t = cp_to_torch(dx_cp)
+
+        def acc(x):
+            #E = model(x[None,None,:]).squeeze()
+            Efieldparticle = model.field(x)
+            Efieldparticle = Efieldparticle * std + mean
+            Efieldparticle = Efieldparticle * ((Q * N))
+            Efieldparticle = Efieldparticle - ((1/N) * cp.sum(Efieldparticle))
+            return QM * Efieldparticle
+
+        _, da_v = jvp(acc, (x_t,), (dx_t,))
+
+        return torch_to_cp(dx_t - DT**2 * da_v)
+
+    return Jv
+
+def residual(model, x_cp, x_old_cp, v_old_cp, DT, QM, Q, N, std, mean):
+    inputs = x_cp[None, :, :].copy() # [batch=1, channel=dim, particles]
+    inputs[:, 0, :] = normalize_per_sample(inputs[:, 0, :])
+    x_t = cp_to_torch(inputs)
+
+    #E = model(x_t[None,None,:]).squeeze()
+    Efieldparticle = torch_to_cp(model.field(x_t))
+    Efieldparticle = Efieldparticle * std + mean
+    Efieldparticle = Efieldparticle * ((Q * N))
+    Efieldparticle = Efieldparticle - ((1/N) * cp.sum(Efieldparticle))
+    a = QM * Efieldparticle
+
+    return x_cp - x_old_cp - DT*v_old_cp - DT**2 * a
 
 
 def push(vp: cp.ndarray, a: cp.ndarray, 
@@ -136,6 +175,66 @@ def move(xp: cp.ndarray, vp: cp.ndarray,
         return xp + vp * DT, 1
     else:
         return xp + vp * DT, wp + DT * findsource(xp + vp * DT / 2, vp, L, it + 0.5, DT)
+
+def implicit_push_move(model, xp, vp, DT,
+                       QM, Q, N, L, dim, std, mean, tol_newton=1e-8,
+                       tol_gmres=1e-6, max_newton=8):
+
+    x_old = xp
+    v_old = vp
+
+    # initial guess (explicit Euler)
+    x = x_old + DT * v_old
+
+    for k in range(max_newton):
+        #Apply periodic BCs 
+        x = toPeriodicND(x, L, dim)
+
+        r = residual(model, x, x_old, v_old, DT, QM, Q, N, std, mean)
+
+        if cp.linalg.norm(r) < tol_newton:
+            break
+
+        b = -r
+
+        # build matrix-free operator around CURRENT x
+        Jv = make_Jv(model, x, DT, QM, Q, N, std, mean)
+
+        def matvec(dx):
+            return Jv(dx)
+
+        N = x.shape[0]
+
+        A = LinearOperator(
+            (N, N),
+            matvec=matvec,
+            dtype=x.dtype
+        )
+
+        dx, info = gmres(
+            A,
+            b,
+            tol=tol_gmres,
+            restart=30,
+            maxiter=5
+        )
+
+        x = x + dx
+
+    # recover velocity
+    inputs = x[None, :, :].copy() # [batch=1, channel=dim, particles]
+    inputs[:, 0, :] = normalize_per_sample(inputs[:, 0, :])
+    x_t = cp_to_torch(inputs)
+    #E = model(x_t[None,None,:]).squeeze()
+    Efieldparticle = torch_to_cp(model.field(x_t))
+    Efieldparticle = Efieldparticle * std + mean
+    Efieldparticle = Efieldparticle * ((Q * N))
+    Efieldparticle = Efieldparticle - ((1/N) * cp.sum(Efieldparticle))
+    a = QM * Efieldparticle
+
+    v_new = v_old + DT * a
+
+    return x, v_new
 
 
 def toPeriodic(x: cp.ndarray, L: float, discrete: bool=False):

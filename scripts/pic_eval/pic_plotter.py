@@ -9,7 +9,7 @@ from scipy import sparse
 import matplotlib.pyplot as plt
 import h5py
 from initial_conditions import InvTransSampling, inv_trans_sampling_gpu
-from dynamics import toPeriodic, accelerate, accelerateML, move, push, toPeriodicND, toPeriodicNDOld
+from dynamics import toPeriodic, accelerate, accelerateML, move, push, implicit_push_move, toPeriodicND, toPeriodicNDOld
 from field import field, fieldInFourier
 from interpolation import interpMatrix, interpolate, p2g_g2p_nostencil_arrays, scatterFourier, gatherFourier
 from landau_decay import period, decayRate
@@ -45,6 +45,7 @@ class PICVisualizer:
         else:
             self.k = np.array([args.kc, args.kc, args.kc])
         self.testCase = args.testCase
+        self.ml_time_int = args.ml_time_int
         if(self.testCase == 'cyclotron'):
             self.L = np.array([1, 1])
             self.B0 = cp.array([0,0,300]) # Constant external magnetic field
@@ -172,50 +173,61 @@ class PICVisualizer:
 
             # Acceleration
             if ml_acc and model is not None:
-                t0 = time.time()
-                inputs = xp[None, :, :].copy() # [batch=1, channel=dim, particles]
-                #breakpoint()
-                #inputs = cp.concatenate([inputs, self.Q[None, None, :]], axis=1) 
-                #inputs = cp.concatenate([inputs, self.Q*cp.ones((1, 1, self.N))], axis=1) 
-                inputs[:, 0, :] = normalize_per_sample(inputs[:, 0, :])
-                
-                if(self.dim > 1):
-                    inputs[:, 1, :] = normalize_per_sample(inputs[:, 1, :])
-                if(self.dim > 2):
-                    inputs[:, 2, :] = normalize_per_sample(inputs[:, 2, :])
+                if(self.ml_time_int == explicit):
+                    t0 = time.time()
+                    inputs = xp[None, :, :].copy() # [batch=1, channel=dim, particles]
+                    #breakpoint()
+                    #inputs = cp.concatenate([inputs, self.Q[None, None, :]], axis=1) 
+                    #inputs = cp.concatenate([inputs, self.Q*cp.ones((1, 1, self.N))], axis=1) 
+                    inputs[:, 0, :] = normalize_per_sample(inputs[:, 0, :])
+                    
+                    if(self.dim > 1):
+                        inputs[:, 1, :] = normalize_per_sample(inputs[:, 1, :])
+                    if(self.dim > 2):
+                        inputs[:, 2, :] = normalize_per_sample(inputs[:, 2, :])
             
-                prediction = model(inputs) # [1, channel=dim, particles]
-                Efieldparticle = prediction.squeeze()
-                #Efieldparticle = Efield_pepc[it, :, :].squeeze()
-                if(self.dim == 1):
-                    Efieldparticle = Efieldparticle * data_output_std + data_output_mean
-                    #Scale by normalization factor \alpha = Q_tot in 1D for the current problem
-                    Efieldparticle = Efieldparticle * ((self.Q * self.N))
-                    #Subtract volume average of electric field for periodic compatibility 
-                    Efieldparticle = Efieldparticle - ((1/self.N) * cp.sum(Efieldparticle))
-                elif(self.dim == 2):
-                    Efieldparticle[0] = Efieldparticle[0] * data_output_std[0] + data_output_mean[0]
-                    Efieldparticle[1] = Efieldparticle[1] * data_output_std[1] + data_output_mean[1]
-                    ###Scale by normalization factor \alpha = Q_tot / sqrt(L_x * L_y) in 2D for the current problem
-                    Efieldparticle[:,:] = Efieldparticle[:,:] * ((self.Q * self.N)/cp.sqrt(self.Ln[0] * self.Ln[1]))
-                    ###Efieldparticle[:,:] = Efieldparticle[:,:] / cp.sqrt(3)
-                    if(self.testCase != 'cyclotron'):
+                    prediction = model(inputs) # [1, channel=dim, particles]
+                    Efieldparticle = prediction.squeeze()
+                    #Efieldparticle = Efield_pepc[it, :, :].squeeze()
+                    if(self.dim == 1):
+                        Efieldparticle = Efieldparticle * data_output_std + data_output_mean
+                        #Scale by normalization factor \alpha = Q_tot in 1D for the current problem
+                        Efieldparticle = Efieldparticle * ((self.Q * self.N))
+                        #Subtract volume average of electric field for periodic compatibility 
+                        Efieldparticle = Efieldparticle - ((1/self.N) * cp.sum(Efieldparticle))
+                    elif(self.dim == 2):
+                        Efieldparticle[0] = Efieldparticle[0] * data_output_std[0] + data_output_mean[0]
+                        Efieldparticle[1] = Efieldparticle[1] * data_output_std[1] + data_output_mean[1]
+                        ###Scale by normalization factor \alpha = Q_tot / sqrt(L_x * L_y) in 2D for the current problem
+                        Efieldparticle[:,:] = Efieldparticle[:,:] * ((self.Q * self.N)/cp.sqrt(self.Ln[0] * self.Ln[1]))
+                        ###Efieldparticle[:,:] = Efieldparticle[:,:] / cp.sqrt(3)
+                        if(self.testCase != 'cyclotron'):
+                            #Subtract volume average of electric field for periodic compatibility 
+                            Efieldparticle[0] = Efieldparticle[0] - ((1/self.N) * cp.sum(Efieldparticle[0]))
+                            Efieldparticle[1] = Efieldparticle[1] - ((1/self.N) * cp.sum(Efieldparticle[1]))
+                    else:
+                        Efieldparticle[0] = Efieldparticle[0] * data_output_std[0] + data_output_mean[0]
+                        Efieldparticle[1] = Efieldparticle[1] * data_output_std[1] + data_output_mean[1]
+                        Efieldparticle[2] = Efieldparticle[2] * data_output_std[2] + data_output_mean[2]
+                        #Scale by normalization factor \alpha = Q_tot / (L_x * L_y * L_z)^(2/3) in 3D for the current problem
+                        Efieldparticle[:,:] = Efieldparticle[:,:] * ((self.Q * self.N)/((self.Ln[0] * self.Ln[1] * self.Ln[2])**(2/3)))
                         #Subtract volume average of electric field for periodic compatibility 
                         Efieldparticle[0] = Efieldparticle[0] - ((1/self.N) * cp.sum(Efieldparticle[0]))
                         Efieldparticle[1] = Efieldparticle[1] - ((1/self.N) * cp.sum(Efieldparticle[1]))
+                        Efieldparticle[2] = Efieldparticle[2] - ((1/self.N) * cp.sum(Efieldparticle[2]))
+                    
+                    a = accelerateML(E=Efieldparticle, wp=wp, QM=self.QM)
+                    vp, kinetic = push(vp=vp, a=a, DT=self.DT, Q=self.Q, QM=self.QM, wp=wp, it=it, testCase=self.testCase, B0=self.B0)
+                    # Update positions and weights
+                    xp, wp = move(xp=xp, vp=vp, wp=wp, DT=self.DT, L=self.Ln, it=it)
+                    times_acc.append(time.time() - t0)
                 else:
-                    Efieldparticle[0] = Efieldparticle[0] * data_output_std[0] + data_output_mean[0]
-                    Efieldparticle[1] = Efieldparticle[1] * data_output_std[1] + data_output_mean[1]
-                    Efieldparticle[2] = Efieldparticle[2] * data_output_std[2] + data_output_mean[2]
-                    #Scale by normalization factor \alpha = Q_tot / (L_x * L_y * L_z)^(2/3) in 3D for the current problem
-                    Efieldparticle[:,:] = Efieldparticle[:,:] * ((self.Q * self.N)/((self.Ln[0] * self.Ln[1] * self.Ln[2])**(2/3)))
-                    #Subtract volume average of electric field for periodic compatibility 
-                    Efieldparticle[0] = Efieldparticle[0] - ((1/self.N) * cp.sum(Efieldparticle[0]))
-                    Efieldparticle[1] = Efieldparticle[1] - ((1/self.N) * cp.sum(Efieldparticle[1]))
-                    Efieldparticle[2] = Efieldparticle[2] - ((1/self.N) * cp.sum(Efieldparticle[2]))
-                
-                a = accelerateML(E=Efieldparticle, wp=wp, QM=self.QM)
-                times_acc.append(time.time() - t0)
+                    t0 = time.time()
+                    xp, vp = implicit_push_move(model, xp, vp, self.DT, self.QM, self.Q, self.N, self.Ln, self.dim, data_output_std, data_output_mean)
+                    kinetic = kinetic(vp, self.Q, self.QM, wp) 
+
+                    times_acc.append(time.time() - t0)
+
             else:
                 t0 = time.time()
                 if(self.ref == 'pic'):
@@ -232,6 +244,9 @@ class PICVisualizer:
                     phiHat, EHat = fieldInFourier(rhoHat=rhoHat, L=self.Ln, dim=self.dim, testCase=self.testCase, ref=self.ref, J=J, T1=T1, Q=self.Q, T2=T2) 
                     # Interpolation fields (in Fourier space) -> particles
                     Efieldparticle, a = gatherFourier(XP=xp, EHat=EHat, SHat=SHat, QM=self.QM, L=self.Ln, dim=self.dim, testCase=self.testCase) 
+                    vp, kinetic = push(vp=vp, a=a, DT=self.DT, Q=self.Q, QM=self.QM, wp=wp, it=it, testCase=self.testCase, B0=self.B0)
+                    # Update positions and weights
+                    xp, wp = move(xp=xp, vp=vp, wp=wp, DT=self.DT, L=self.Ln, it=it)
                 times_acc.append(time.time() - t0)
            
             #if(self.testCase == 'cyclotron'):
@@ -247,9 +262,6 @@ class PICVisualizer:
             #            else:
             #                self.visualize_Efield((xp-self.Ln[0]/2).get(), Efieldparticle.get(), it, f"Efield_{self.ref}_{it}.png")
 
-            vp, kinetic = push(vp=vp, a=a, DT=self.DT, Q=self.Q, QM=self.QM, wp=wp, it=it, testCase=self.testCase, B0=self.B0)
-            # Update positions and weights
-            xp, wp = move(xp=xp, vp=vp, wp=wp, DT=self.DT, L=self.Ln, it=it)
             if(self.dim == 1):
                 # Mometum: Note since vp is at half time steps the momentum is calculated at these indices rather than integer time steps
                 mom = cp.abs(cp.sum(self.Q * vp / self.QM))

@@ -887,3 +887,13 @@ class FourierNeuralOperator:
         # u1 = outp.cpu().detach().numpy()
         u1 = cp.from_dlpack(outp.detach())
         return u1
+
+    def field(self, x_t):
+    """
+    Differentiable field operator:
+    x_t: torch tensor [N]
+    returns E(x) [N]
+    """
+    self.model.eval()
+    #return self.model(x_t[None, :, :]).squeeze()
+    return self.model(x_t).squeeze()
