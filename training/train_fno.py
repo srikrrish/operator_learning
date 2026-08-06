@@ -889,11 +889,7 @@ class FourierNeuralOperator:
         return u1
 
     def field(self, x_t):
-    """
-    Differentiable field operator:
-    x_t: torch tensor [N]
-    returns E(x) [N]
-    """
-    self.model.eval()
-    #return self.model(x_t[None, :, :]).squeeze()
-    return self.model(x_t).squeeze()
+        self.model.eval()
+        return self.model(x_t[None, None, :]).squeeze()
+        #return x_t
+        #return self.model(x_t).squeeze()

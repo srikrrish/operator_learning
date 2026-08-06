@@ -54,6 +54,8 @@ parser.add_argument(
 parser.add_argument(
     "--ref", default="pic", help="Choose the reference numerical scheme pic or pif")
 parser.add_argument(
+    "--ml_time_int", default="explicit", help="Choose explicit or implicit time integration for NEOPIC")
+parser.add_argument(
     "--config", default=None, help="configuration file")
 args = parser.parse_args()
 

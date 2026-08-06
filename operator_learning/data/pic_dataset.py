@@ -122,15 +122,32 @@ class PICDataset(Dataset):
         print_rank0(f" -- outType : {self._decode(infos['outType'][()])}")
         print_rank0(f" -- outScaling : {infos['outScaling'][()]:1.2g}")
 
+def get_xp(x):
+    return cp.get_array_module(x)  # returns np or cp automatically
+
 
 def normalize_per_sample(data: cp.ndarray) -> cp.ndarray:
     """
     Normalize each sample independently to the [0, 1] range.
     """
+    xp = cp.get_array_module(data)
     data_min = data.min(axis=1, keepdims=True)
     data_max = data.max(axis=1, keepdims=True)
     #denom = cp.where(data_max > data_min, data_max - data_min, 1.0)
-    denom = np.where(data_max > data_min, data_max - data_min, 1.0)
+    denom = xp.where(data_max > data_min, data_max - data_min, xp.ones_like(data_max))
+    new_data = (data - data_min) / denom
+    return new_data
+
+def normalize_per_sample_torch(data: torch.Tensor):
+
+    data_min = data.min(dim=1, keepdim=True).values
+    data_max = data.max(dim=1, keepdim=True).values
+    
+    denom = torch.where(
+        data_max > data_min,
+        data_max - data_min,
+        torch.ones_like(data_max)
+    )
     new_data = (data - data_min) / denom
     return new_data
 
@@ -192,18 +209,26 @@ def createDatasetFromPIC(picFile: str,
     #input_keys = ["pos_weakLandau_pif_500k", "pos_strongLandau_pif_500k", "pos_tsi_pif_500k", "pos_bti_pif_500k", "pos_cyclotron_pif_500k"]
     #output_keys = ["Eout_weakLandau_pif_500k", "Eout_strongLandau_pif_500k", "Eout_tsi_pif_500k", "Eout_bti_pif_500k", "Eout_cyclotron_pif_500k"]
 
-    #2D PEPC dataset
-    #input_keys = ["inp_weakLandau_pepc_500k"]
-    #output_keys = ["out_weakLandau_pepc_500k"]
+    #2D PEPC cyclotron
+    #input_keys = ["pos_cyclotron_pepc_500k"]
+    #output_keys = ["Eout_cyclotron_pepc_500k"]
+    
+    #2D PIF weakLandau dataset for error scaling
+    input_keys = ["pos_weakLandau_pif_800k"]
+    output_keys = ["Eout_weakLandau_pif_800k"]
 
     #3D BH + PIF dataset
     #input_keys = ["pos_weakLandau_bh_100k", "pos_strongLandau_pif_100k", "pos_penning_pif_100k"]
     #output_keys = ["Eout_weakLandau_bh_100k", "Eout_strongLandau_pif_100k", "Eout_penning_pif_100k"]
 
     #3D BH + PIF + PIC dataset
-    input_keys = ["pos_weakLandau_bh_100k", "pos_strongLandau_bh_100k", "pos_tsi_pif_100k", "pos_bti_pif_100k", "pos_penning_pic_100k"]
-    output_keys = ["Eout_weakLandau_bh_100k", "Eout_strongLandau_bh_100k", "Eout_tsi_pif_100k", "Eout_bti_pif_100k", "Eout_penning_pic_100k"]
-    
+    #input_keys = ["pos_weakLandau_bh_100k", "pos_strongLandau_bh_100k", "pos_tsi_pif_100k", "pos_bti_pif_100k", "pos_penning_pic_100k"]
+    #output_keys = ["Eout_weakLandau_bh_100k", "Eout_strongLandau_bh_100k", "Eout_tsi_pif_100k", "Eout_bti_pif_100k", "Eout_penning_pic_100k"]
+
+    #3D PEPC dataset
+    #input_keys = ["pos_weakLandau_ocp_pepc_100k", "pos_strongLandau_ocp_pepc_100k", "pos_tsi_ocp_pepc_100k", "pos_bti_ocp_pepc_100k"]
+    #output_keys = ["Eout_weakLandau_ocp_pepc_100k", "Eout_strongLandau_ocp_pepc_100k", "Eout_tsi_ocp_pepc_100k", "Eout_bti_ocp_pepc_100k"]
+
     #1D PIF dataset
     #input_keys = ["pos_weakLandau", "pos_strongLandau", "pos_tsi", "pos_bti"]
     #output_keys = ["Eout_weakLandau", "Eout_strongLandau", "Eout_tsi", "Eout_bti"]
@@ -228,15 +253,18 @@ def createDatasetFromPIC(picFile: str,
 
 
     #q1_xsize = sum(t.shape[0] for t in inputs_list[:3])
-    q1_xsize = sum(t.shape[0] for t in inputs_list[:3])
+    q1_xsize = sum(t.shape[0] for t in inputs_list[:1])
     # Scale by \alpha = Q_tot for 1D, \alpha = Q_tot / sqrt(L_x*L_y) for 2D and \alpha = Q_tot / (L_x*L_y*L_z)^(2/3) for 3D. 
     # For weakLandau, strongLandau, bump-on-tail instability and two-stream instability it boils down to 
     # \alpha = -L irrespective of dimensions
+    #outputs[:q1_xsize,:,:] = outputs[:q1_xsize,:,:] / (-(10))
     outputs[:q1_xsize,:,:] = outputs[:q1_xsize,:,:] / (-(2 * np.pi / 0.5))
-    outputs[q1_xsize:(q1_xsize + inputs_list[3].shape[0]),:,:] = outputs[q1_xsize:(q1_xsize + inputs_list[3].shape[0]),:,:] / (-(2 * np.pi / 0.21))
+    #outputs[q1_xsize:(q1_xsize + inputs_list[2].shape[0]),:,:] = outputs[q1_xsize:(q1_xsize + inputs_list[2].shape[0]),:,:] / (-(2 * np.pi / (0.5 * 0.1)))
+    #outputs[(q1_xsize + inputs_list[2].shape[0]):,:,:] = outputs[(q1_xsize + inputs_list[2].shape[0]):,:,:] / (-(2 * np.pi / (0.21 * (1 / np.sqrt(2)))))
+    #outputs[q1_xsize:(q1_xsize + inputs_list[3].shape[0]),:,:] = outputs[q1_xsize:(q1_xsize + inputs_list[3].shape[0]),:,:] / (-(2 * np.pi / 0.21))
     #outputs[q1_xsize:,:,:] = outputs[q1_xsize:,:,:] / (-(1562.5 / (25**2))) # Q_tot = -1562.5 and L_x=L_y=L_z=25 for Penning trap
     #outputs[(q1_xsize + inputs_list[3].shape[0]):,:,:] = outputs[(q1_xsize + inputs_list[3].shape[0]):,:,:] / (-1)
-    outputs[(q1_xsize + inputs_list[3].shape[0]):,:,:] = outputs[(q1_xsize + inputs_list[3].shape[0]):,:,:] / (-(1562.5 / (25**2))) # Q_tot = -1562.5 and L_x=L_y=L_z=25 for Penning trap
+    #outputs[(q1_xsize + inputs_list[3].shape[0]):,:,:] = outputs[(q1_xsize + inputs_list[3].shape[0]):,:,:] / (-(1562.5 / (25**2))) # Q_tot = -1562.5 and L_x=L_y=L_z=25 for Penning trap
 
     # Shuffle timestep
     inputs = inp
