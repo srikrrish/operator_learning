@@ -69,8 +69,8 @@ class PICVisualizer:
             self.Q = self.L[0]/ (self.QM * self.N)                                 # Charge of a particle
             self.rho_back = - self.Q * self.N / self.L[0]                          # background rho
         elif self.dim == 2:
-            #self.Q = self.L[0] * self.L[1] / (self.QM * self.N)
-            self.Q = (self.L[0] * self.L[1] * 10) / (self.QM * self.N)
+            self.Q = self.L[0] * self.L[1] / (self.QM * self.N)
+            #self.Q = (self.L[0] * self.L[1] * 10) / (self.QM * self.N)
             self.rho_back = - self.Q * self.N / (self.L[0] * self.L[1])
         else:
             self.Q = self.L[0] * self.L[1] * self.L[2] / (self.QM * self.N)
@@ -260,7 +260,7 @@ class PICVisualizer:
                     phi, Eg = field(rho=rho, L=self.Ln, dim=self.dim, J=J, T1=T1, testCase=self.testCase, NG=self.NG)
                     # Interpolation: grid -> particle
                     _, Efieldparticle, a = p2g_g2p_nostencil_arrays(XP=xp, DX=self.dxn, NG=self.NG, L=self.Ln, dim=self.dim, testCase=self.testCase, E=Eg, QM=self.QM)
-                    #self.write_hdf5_step(filename="Reference_pic_100k.h5",xp=xp,Efieldparticle=Efieldparticle,pos_key="pos_pic",E_key="Eout_pic")
+                    #self.write_hdf5_step(filename="Reference_pic_{self.N}.h5",xp=xp,vp=vp,Efieldparticle=Efieldparticle,pos_key="pos_pic",E_key="Eout_pic",vel_key="vel_pic")
                 elif(self.ref == 'pif'):
                     # Interpolation: particle -> Fourier space
                     rhoHat = scatterFourier(XP=xp, SHat=SHat, NG=self.NG, N=self.N, Q=self.Q, L=self.Ln, dim=self.dim, testCase=self.testCase)
@@ -268,7 +268,7 @@ class PICVisualizer:
                     phiHat, EHat = fieldInFourier(rhoHat=rhoHat, L=self.Ln, dim=self.dim, testCase=self.testCase, ref=self.ref, J=J, T1=T1, Q=self.Q, T2=T2)
                     # Interpolation fields (in Fourier space) -> particles
                     Efieldparticle, a = gatherFourier(XP=xp, EHat=EHat, SHat=SHat, QM=self.QM, L=self.Ln, dim=self.dim, testCase=self.testCase)
-                    #self.write_hdf5_step(filename=f"Reference_pif_{self.N}.h5",xp=xp,vp=vp,Efieldparticle=Efieldparticle,pos_key="pos_pif",vel_key="vel_pif",E_key="Eout_pif")
+                    self.write_hdf5_step(filename=f"Reference_pif_{self.N}.h5",xp=xp,vp=vp,Efieldparticle=Efieldparticle,pos_key="pos_pif",vel_key="vel_pif",E_key="Eout_pif")
                 times_acc.append(time.time() - t0)
 
 

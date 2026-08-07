@@ -3,8 +3,8 @@ import cupyx.scipy.special as sp
 from scipy import special
 
 
-def specKernel(NG, L, dx, dim, order=5):
-#def specKernel(NG, L, dx, dim, order=2):
+#def specKernel(NG, L, dx, dim, order=5):
+def specKernel(NG, L, dx, dim, order=2):
     Ka = cp.arange(1, NG // 2)
     Kb = Ka[::-1]
     K = cp.append(cp.append(Ka, [- NG // 2]), - Kb)
