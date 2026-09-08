@@ -287,7 +287,14 @@ def push(vp: cp.ndarray, a: cp.ndarray,
     if it == 0:
         if(testCase == 'cyclotron'):
             Ek = kinetic(vp, Q, QM, wp)
-            vp = vp + DT * (a + QM * cp.cross(vp, B0, axisa=0)[:, 0:2].T) / 2
+            #vp = vp + DT * (a + QM * cp.cross(vp, B0, axisa=0)[:, 0:2].T) / 2
+            #return vp, Ek
+            DT_half = DT / 2
+            Vm = vp + a * DT_half / 2
+            Vprime = Vm + cp.cross(Vm, B0, axisa=0)[:, 0:2].T * QM * DT_half / 2
+            Vp = Vm + cp.cross(Vprime, B0, axisa=0)[:, 0:2].T * QM * DT_half / (1 + (cp.linalg.norm(B0)*QM*DT_half/2) ** 2)
+            new_vp = Vp + a * DT_half / 2
+            vp = new_vp
             return vp, Ek
         else:
             #return vp + a * DT / 2, kinetic(vp + a * DT / 2, Q, QM, wp)

@@ -61,9 +61,10 @@ def freeSpaceKernelsPIF(NG, L):
     J = cp.fft.fftshift(wm) * cp.ones([NG * extension, 1])
     Kabsolute = cp.transpose(cp.sqrt(J**2 + cp.transpose(J)**2))
     Kabsolute[0,0] = 1  # avoid 0 on denominator
-    SHat = (2 * sp.j1(r * Kabsolute) / (r * Kabsolute)) ** 2 
-    SHat[0, 0] = 1
-    SHat = SHat * (L[0] / NG) ** 2 / (r **2)
+    #SHat = (2 * sp.j1(r * Kabsolute) / (r * Kabsolute)) ** 2 
+    #SHat[0, 0] = 1
+    #SHat = SHat * (L[0] / NG) ** 2 / (r **2)
+    SHat = cp.ones_like(Kabsolute)
     
     green1 = SHat * cp.fft.fftshift(green)
     green2 = SHat ** 2 * cp.fft.fftshift(green)
