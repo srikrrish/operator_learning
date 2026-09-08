@@ -23,7 +23,6 @@ def kinetic(vp: cp.ndarray, Q: float, QM: float = -1, wp: float = 1, dim: int = 
         float: Total kinetic energy of the system.
     """
     return cp.sum((Q / QM) * (vp ** 2)) * 0.5
-    #return Q * wp * cp.sum(vp ** 2) * 0.5  / QM
 
 def potential(rho: np.ndarray, phi: np.ndarray, dx: np.ndarray, dim:int = 1) -> float:
     """

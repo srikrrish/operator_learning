@@ -32,7 +32,6 @@ class PICVisualizer:
         self.eval_dir.mkdir(parents=True, exist_ok=True)
         self.QM = args.Qm
         self.N = args.nParticle
-        #self.QM = cp.concatenate([-cp.ones(self.N//2),cp.ones(self.N//2)],axis=0)
         self.NG = args.NG
         self.DT = args.dt
         self.T = args.T
@@ -161,37 +160,9 @@ class PICVisualizer:
             T1 = None
             T2 = None
 
-        #output_keys_E = "Eout_cyclotron_pepc_500k"
-        #output_keys_pos = "pos_cyclotron_pepc_500k"
-        #output_keys_vel = "vel_cyclotron_pepc_500k"
-        #output_keys_label = "label_cyclotron_pepc_500k"
-        ###file_path = "/p/project1/hai_1073/muralikrishnan1/Datasets_2D_electrostatic_plasma/2D_PEPC_weak_landau_500k_with_q.h5"
-        ###file_path = "/p/project1/hai_1073/muralikrishnan1/Datasets_3D_electrostatic_plasma/temp/3D_PEPC_tsi_100k.h5"
-        ###file_path = "/p/scratch/pepcexa/muralikrishnan1/PEPC_OCP/bti/eps_3/random_start/data/particles/3D_PEPC_bti_100k.h5"
-        ##file_path = "/p/project1/hai_1073/muralikrishnan1/Datasets_2D_electrostatic_plasma/2D_PEPC_cyclotron_500k.h5"
-        #file_path = "/p/scratch/pepcexa/muralikrishnan1/PEPC_cyclotron/Q_10x/data/particles/2D_PEPC_cyclotron_500k_with_vel_label.h5"
-
-        #with h5py.File(file_path, "r") as f:
-        #    data_E = f[output_keys_E][:, :]
-        #    data_pos = f[output_keys_pos][:, :]
-        #    data_vel = f[output_keys_vel][:, :]
-        #    data_label = f[output_keys_label][:, :]
-        #    Efield_pepc = cp.array(data_E, dtype=cp.float32)
-        #    Efield_pepc = Efield_pepc.swapaxes(-1,-2)
-        #    pos_pepc = cp.array(data_pos, dtype=cp.float32)
-        #    pos_pepc = pos_pepc.swapaxes(-1,-2)
-        #    #vel_pepc = cp.array(data_vel, dtype=cp.float32)
-        #    #vel_pepc = vel_pepc.swapaxes(-1,-2)
-        #    label_pepc = cp.array(data_label)
-        #    label_pepc = label_pepc.swapaxes(-1,-2)
-        #
-        #xp = pos_pepc[0, :, :]
-        ##vp = vel_pepc[1200, :, :]
         for it in range(self.NT):
 
             print(it)
-            #xp = pos_pepc[it, :, :]
-            #vp = vel_pepc[it, :, :]
             if(self.testCase != 'cyclotron'):
                 #Apply periodic BCs
                 #if ml_acc:
@@ -204,9 +175,6 @@ class PICVisualizer:
                 if(self.ml_time_int == 'explicit'):
                     t0 = time.time()
                     inputs = xp[None, :, :].copy() # [batch=1, channel=dim, particles]
-                    #breakpoint()
-                    #inputs = cp.concatenate([inputs, self.Q[None, None, :]], axis=1)
-                    #inputs = cp.concatenate([inputs, self.Q*cp.ones((1, 1, self.N))], axis=1)
                     inputs[:, 0, :] = normalize_per_sample(inputs[:, 0, :])
 
                     if(self.dim > 1):
@@ -216,7 +184,6 @@ class PICVisualizer:
 
                     prediction = model(inputs) # [1, channel=dim, particles]
                     Efieldparticle = prediction.squeeze()
-                    #Efieldparticle = Efield_pepc[2398, :, :].squeeze()
                     if(self.dim == 1):
                         Efieldparticle = Efieldparticle * data_output_std + data_output_mean
                         #Scale by normalization factor \alpha = Q_tot in 1D for the current problem
@@ -284,114 +251,18 @@ class PICVisualizer:
                     #self.write_hdf5_step(filename=f"Reference_pif_{self.N}.h5",xp=xp,vp=vp,Efieldparticle=Efieldparticle,pos_key="pos_pif",vel_key="vel_pif",E_key="Eout_pif")
                 times_acc.append(time.time() - t0)
 
-
-            #Efield_BH = Efield_pepc[it, : , :]
-            #ratio = (cp.linalg.norm(Efieldparticle, axis=0) / cp.linalg.norm(Efield_BH, axis=0))
-
-            #mask = cp.linalg.norm(Efield_BH, axis=0) > 1e-8
-            #
-            #print("mean:", float(cp.mean(ratio[mask])))
-            #print("median:", float(cp.median(ratio[mask])))
-            #print("std:", float(cp.std(ratio[mask])))
-            #print("min:", float(cp.min(ratio[mask])))
-            #print("max:", float(cp.max(ratio[mask])))
-
-            #numerator = cp.sum(Efieldparticle * Efield_BH)
-            #denominator = cp.sum(Efield_BH * Efield_BH)
-
-            #C = numerator / denominator
-            #residual = Efieldparticle - C * Efield_BH
-            #print("Best-fit scaling factor:", float(C))
-
-            ##E_pif_scaled = Efieldparticle / C
-
-            ##error = cp.linalg.norm(
-            ##        E_pif_scaled - Efield_BH,
-            ##        axis=0
-            ##        )
-
-            ##print("mean error :", float(cp.mean(error)))
-            ##print("median error:", float(cp.median(error)))
-            ##print("max error  :", float(cp.max(error)))
-            ##rel_residual = (cp.linalg.norm(residual, axis=0) / (cp.linalg.norm(Efield_BH, axis=0) + 1e-12))
-
-            ##
-            ##print("relative residual mean:", float(cp.mean(rel_residual)))
-            ##
-            ##print("relative residual median:", float(cp.median(rel_residual)))
-            ##
-            ##print("relative residual max:", float(cp.max(rel_residual)))
-            ##R2 = 1 - cp.sum(residual**2) / cp.sum(Efieldparticle**2)
-
-            ##print("R2:", float(R2))
-
-            #dot = cp.sum(Efieldparticle * Efield_BH, axis=0)
-
-            #norm_pif = cp.linalg.norm(Efieldparticle, axis=0)
-            #norm_bh  = cp.linalg.norm(Efield_BH, axis=0)
-            #
-            #cos_theta = dot / (norm_pif * norm_bh + 1e-14)
-            #
-            #print("mean cos(theta):",
-            #      float(cp.mean(cos_theta)))
-            #
-            #print("median cos(theta):",
-            #      float(cp.median(cos_theta)))
-
-            #rms_bh = cp.sqrt(cp.mean(Efield_BH**2))
-            #rms_pif = cp.sqrt(cp.mean(Efieldparticle**2))
-
-            #print("RMS BH :", float(rms_bh))
-            #print("RMS PIF:", float(rms_pif))
-            #print("ratio  :", float(rms_pif / rms_bh))
-            #rms_bh_x = cp.sqrt(cp.mean(Efield_BH[0]**2))
-            #rms_pif_x = cp.sqrt(cp.mean(Efieldparticle[0]**2))
-
-            #rms_bh_y = cp.sqrt(cp.mean(Efield_BH[1]**2))
-            #rms_pif_y = cp.sqrt(cp.mean(Efieldparticle[1]**2))
-
-            #print("Ex ratio:", float(rms_pif_x / rms_bh_x))
-            #print("Ey ratio:", float(rms_pif_y / rms_bh_y))
-
-            #Cx = cp.sum(Efieldparticle[0] * Efield_BH[0]) / cp.sum(Efield_BH[0]**2)
-            #Cy = cp.sum(Efieldparticle[1] * Efield_BH[1]) / cp.sum(Efield_BH[1]**2)
-
-            #print("Cx =", float(Cx))
-            #print("Cy =", float(Cy))
-            #rx = Efieldparticle[0] - Cx * Efield_BH[0]
-            #ry = Efieldparticle[1] - Cy * Efield_BH[1]
-
-            #print("Ex relative RMS residual:",
-            #    float(cp.sqrt(cp.mean(rx**2)) /
-            #    cp.sqrt(cp.mean(Efieldparticle[0]**2))))
-
-            #print("Ey relative RMS residual:",
-            #    float(cp.sqrt(cp.mean(ry**2)) /
-            #    cp.sqrt(cp.mean(Efieldparticle[1]**2))))
-            #breakpoint()
             if(self.testCase == 'cyclotron'):
                 if (it%100==0) or (it==(self.NT-1)):
                     if ml_acc:
                         if(self.ref == 'pif'):
                             self.visualize_Efield(xp.get(), Efieldparticle.get(), it, f"Efield_pinop_{it}.png")
-                            #self.visualize_Efield(xp.get(), vp.get(), it, f"Vfield_pinop_{it}.png")
-                            #self.visualize_Efield((pos_pepc[it,:,:].squeeze()).get(), Efieldparticle.get(), it, f"Efield_pepc_{it}.png")
-                            #xvis = xp + 0.5*self.Ln[:, None]
-                            #xvis = cp.mod(xvis, self.Ln[:, None])
-                            #rho, _, _ = p2g_g2p_nostencil_arrays(XP=xvis, DX=(self.dxn)/(512/self.NG), NG=512, L=self.Ln, dim=self.dim, testCase=self.testCase, Q=self.Q, rho_back=self.rho_back)
-                            #self.field2D(rho.get(), NG=512, output_filename=f"rho_pinop_{it}.png")
                             self.field2D_histogram(xp.get(), NG=512, output_filename=f"rho_pinop_{it}.png")
-                            #self.field2D_histogram((pos_pepc[it,:,:].squeeze()).get(), NG=512, output_filename=f"rho_pepc_{it}.png")
                         else:
                             self.visualize_Efield((xp-self.Ln[0]/2).get(), Efieldparticle.get(), it, f"Efield_pinop_{it}.png")
                             self.field2D_histogram((xp-self.Ln[0]/2).get(), NG=512, output_filename=f"rho_pinop_{it}.png")
                     else:
                         if(self.ref == 'pif'):
                             self.visualize_Efield(xp.get(), Efieldparticle.get(), it, f"Efield_{self.ref}_{it}.png")
-                            #xvis = xp + 0.5*self.Ln[:, None]
-                            #xvis = cp.mod(xvis, self.Ln[:, None])
-                            #rho, _, _ = p2g_g2p_nostencil_arrays(XP=xvis, DX=(self.dxn)/(512/self.NG), NG=512, L=self.Ln, dim=self.dim, testCase=self.testCase, Q=self.Q, rho_back=self.rho_back)
-                            #self.field2D(rho.get(), NG=512, output_filename=f"rho_pif_{it}.png")
                             self.field2D_histogram(xp.get(), NG=512, output_filename=f"rho_pif_{it}.png")
                         else:
                             self.visualize_Efield((xp-self.Ln[0]/2).get(), Efieldparticle.get(), it, f"Efield_{self.ref}_{it}.png")
@@ -400,98 +271,7 @@ class PICVisualizer:
             if(self.ml_time_int != 'implicit'):
                 vp, kinetic_energy = push(vp=vp, a=a, DT=self.DT, Q=self.Q, QM=self.QM, wp=wp, it=it, testCase=self.testCase, B0=self.B0)
                 xp, wp = move(xp=xp, vp=vp, wp=wp, DT=self.DT, L=self.Ln, it=it)
-                ## Labels at the two timesteps
-                #labels_old = label_pepc[it, 0, :]
-                #labels_new = label_pepc[it_next, 0, :]
 
-                #print("unique labels at 2398:",
-                #       cp.unique(labels_old).size,
-                #       "/", labels_old.size)
-
-                #print("unique labels at 2399:",
-                #       cp.unique(labels_new).size,
-                #       "/", labels_new.size)
-
-                #print("same particles:",
-                #       cp.array_equal(cp.sort(labels_old), cp.sort(labels_new)))
-                ## Sort timestep-2399 particles by their global label
-                #sort_idx = cp.argsort(labels_new)
-                #
-                #labels_new_sorted = labels_new[sort_idx]
-                ## Find where each particle from timestep 2398
-                ## occurs in timestep 2399
-                #idx = cp.searchsorted(labels_new_sorted, labels_old)
-                #
-                ## Check that every particle was found
-                #valid = (
-                #    (idx < labels_new_sorted.size) &
-                #    (labels_new_sorted[idx] == labels_old)
-                #)
-                #
-                #print("Matched:", int(cp.sum(valid)), "/", labels_old.size)
-                ### Update positions and weights
-                #vel_new = vel_pepc[it_next]
-                #
-                #vel_new_sorted = vel_new[:, sort_idx]
-                #
-                #
-                ## Actual positions at t=2399, reordered to correspond
-                ## to the particle ordering at t=2398
-                #vel_actual = vel_new_sorted[:, idx]
-                #vel_calculated = vp
-                #
-                ## Position error for each particle
-                #error = cp.linalg.norm(
-                #    vel_calculated - vel_actual,
-                #    axis=0
-                #)
-                #
-                ## Only consider successfully matched particles
-                #error_valid = error[valid]
-                #
-                #print("Max error in velocity :", float(cp.max(error_valid)))
-                #print("Mean error in velocity :", float(cp.mean(error_valid)))
-                #print("Median error in velocity :", float(cp.median(error_valid)))
-                #
-                #
-                ## BH positions at timestep 2399
-                #pos_new = pos_pepc[it_next]
-                #
-                #pos_new_sorted = pos_new[:, sort_idx]
-                #
-                #
-                ## Actual positions at t=2399, reordered to correspond
-                ## to the particle ordering at t=2398
-                #pos_actual = pos_new_sorted[:, idx]
-                #
-                ## Your calculated positions
-                ## xp should already correspond to the ordering at t=2398
-                #pos_calculated = xp
-                #
-                ## Position error for each particle
-                #error = cp.linalg.norm(
-                #    pos_calculated - pos_actual,
-                #    axis=0
-                #)
-                #
-                ## Only consider successfully matched particles
-                #error_valid = error[valid]
-                #
-                #print("Max error in position :", float(cp.max(error_valid)))
-                #print("Mean error in psoition :", float(cp.mean(error_valid)))
-                #print("Median error in position :", float(cp.median(error_valid)))
-
-                #test_idx = cp.random.randint(0, labels_old.size, size=10) 
-                #for p in test_idx:
-                #    p = int(p)
-                #
-                #    q = int(idx[p])
-
-                #    print("\nparticle label:", int(labels_old[p]))
-                #    print("calculated:   ", cp.asnumpy(xp[:, p]))
-                #    print("actual:       ", cp.asnumpy(pos_pepc[it_next, :, q]))
-                #    print("error:        ", float(error[p]))
-                #breakpoint()
 
             if(self.dim == 1):
                 # Mometum: Note since vp is at half time steps the momentum is calculated at these indices rather than integer time steps

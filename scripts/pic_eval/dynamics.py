@@ -297,7 +297,6 @@ def push(vp: cp.ndarray, a: cp.ndarray,
             vp = new_vp
             return vp, Ek
         else:
-            #return vp + a * DT / 2, kinetic(vp + a * DT / 2, Q, QM, wp)
             return vp + a * DT / 2, kinetic(vp, Q, QM, wp)
 
     else:
@@ -310,7 +309,6 @@ def push(vp: cp.ndarray, a: cp.ndarray,
             vp = new_vp
             return vp, Ek
         else:
-            #return vp + a * DT, kinetic(vp + a * DT, Q, QM, wp)
             return vp + a * DT, kinetic((vp + (vp + a * DT))/2, Q, QM, wp)
 
 

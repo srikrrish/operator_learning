@@ -245,8 +245,6 @@ def inv_trans_sampling_gpu(alpha, k, L, N, dim=1,
         if(ref == 'pic'):
             X = X + cp.array([0.5*Larr[0], 0.5*Larr[1]])
             X = cp.mod(X, Larr)
-        #X = cp.zeros((dim,N))
-        #VP = cp.ones((dim,N))
         VP = cp.random.randn(dim, N)
         XP = X
 

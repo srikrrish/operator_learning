@@ -37,12 +37,6 @@ def fieldInFourier(rhoHat, L, dim, testCase, ref, J, T1, Q=None, T2=None):
         phiHat = cp.append([0], rhoHat[1:] * (L / (2 * cp.pi * K)) ** 2)
         EHat = cp.append([0], rhoHat[1:] * L / (2j * cp.pi * K))
         EHat[N // 2] = 0
-        #K = cp.concatenate([Ka, [N // 2], -Kb])  # length N-1
-
-        #rho_modes = rhoHat[1:]                   # skip zero mode → length N-1
-        #phiHat = cp.concatenate([[0], rho_modes * (L / (2 * cp.pi * K)) ** 2])
-        #EHat   = cp.concatenate([[0], rho_modes * (L / (2j * cp.pi * K))])
-        #EHat[N // 2] = 0
     elif(dim == 2):
         if(testCase == 'cyclotron'):
             if(ref == 'pif'):
