@@ -147,6 +147,8 @@ class PICVisualizer:
         # Time tracking
         times_acc = []
 
+        _ev_start, _ev_end = [], []
+
         if((self.ref == 'pif') and (self.testCase != 'cyclotron')):
             SHat = specKernel(NG=self.NG, L=self.Ln, dx=self.dxn, dim=self.dim)
 
@@ -173,7 +175,8 @@ class PICVisualizer:
             # Acceleration
             if ml_acc and model is not None:
                 if(self.ml_time_int == 'explicit'):
-                    t0 = time.time()
+                    e_start = cp.cuda.Event(); e_end = cp.cuda.Event()
+                    e_start.record()
                     inputs = xp[None, :, :].copy() # [batch=1, channel=dim, particles]
                     inputs[:, 0, :] = normalize_per_sample(inputs[:, 0, :])
 
@@ -213,9 +216,9 @@ class PICVisualizer:
                     #
                     #self.write_hdf5_step(filename=f"Inference_{self.N}.h5",xp=xp,vp=vp,Efieldparticle=Efieldparticle,pos_key="pos",vel_key="vel",E_key="Eout")
                     a = accelerateML(E=Efieldparticle, wp=wp, QM=self.QM)
-                    times_acc.append(time.time() - t0)
+                    e_end.record()
+                    _ev_start.append(e_start); _ev_end.append(e_end)
                 else:
-                    t0 = time.time()
                     xp, vp = newton_push_move_xv(model, xp, vp, self.DT, self.QM, self.Q, self.N, self.Ln, self.dim, data_output_std, data_output_mean)
                     #xp, vp = picard_push_move_xv(model, xp, vp, self.DT, self.QM, self.Q, self.N, self.Ln, self.dim, data_output_std, data_output_mean)
                     kinetic_energy = kinetic(vp, self.Q, self.QM, wp)
@@ -229,10 +232,9 @@ class PICVisualizer:
                     #Subtract volume average of electric field for periodic compatibility
                     Efieldparticle = Efieldparticle - ((1/self.N) * cp.sum(Efieldparticle))
 
-                    times_acc.append(time.time() - t0)
-
             else:
-                t0 = time.time()
+                e_start = cp.cuda.Event(); e_end = cp.cuda.Event()
+                e_start.record()
                 if(self.ref == 'pic'):
                     # Interpolation: particle -> grid
                     rho, _, _ = p2g_g2p_nostencil_arrays(XP=xp, DX=self.dxn, NG=self.NG, L=self.Ln, dim=self.dim, testCase=self.testCase, Q=self.Q, rho_back=self.rho_back)
@@ -249,8 +251,9 @@ class PICVisualizer:
                     # Interpolation fields (in Fourier space) -> particles
                     Efieldparticle, a = gatherFourier(XP=xp, EHat=EHat, SHat=SHat, QM=self.QM, L=self.Ln, dim=self.dim, testCase=self.testCase)
                     #self.write_hdf5_step(filename=f"Reference_pif_{self.N}.h5",xp=xp,vp=vp,Efieldparticle=Efieldparticle,pos_key="pos_pif",vel_key="vel_pif",E_key="Eout_pif")
-                times_acc.append(time.time() - t0)
-
+                e_end.record()
+                _ev_start.append(e_start); _ev_end.append(e_end)
+            
             if(self.testCase == 'cyclotron'):
                 if (it%100==0) or (it==(self.NT-1)):
                     if ml_acc:
@@ -318,8 +321,12 @@ class PICVisualizer:
             else:
                 momentum = None
 
-        time_acc_mean = np.round(np.mean(times_acc)*(10**3),3)
+        cp.cuda.Stream.null.synchronize()   # here we do a single sync for the whole run to ensure all events happened
+
+        times_acc = [cp.cuda.get_elapsed_time(s, e) for s, e in zip(_ev_start, _ev_end)]
+        time_acc_mean = np.round(np.mean(times_acc), 3)   # already in ms
         print(f"Average acceleration time per iteration: {time_acc_mean:.3f} millisec")
+
 
         return xp, vp, wp, E, Ek, Ep, momentum, Exp, Eyp, Ezp, time_acc_mean
 
