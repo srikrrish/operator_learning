@@ -12,13 +12,14 @@ import matplotlib
 import matplotlib.pyplot as plt
 import h5py
 from initial_conditions import InvTransSampling, inv_trans_sampling_gpu
-from dynamics import toPeriodic, accelerate, accelerateML, move, push, newton_push_move_xv, picard_push_move_xv, toPeriodicND, toPeriodicND_old
+from dynamics import toPeriodic, accelerate, accelerateML, move, push, push1, push2, newton_push_move_xv, picard_push_move_xv, toPeriodicND, toPeriodicND_old
 from field import field, fieldInFourier
 from interpolation import interpMatrix, interpolate, p2g_g2p_nostencil_arrays, scatterFourier, gatherFourier
 from landau_decay import period, decayRate
 from energy import potential, kinetic
 from operator_learning.data.pic_dataset import normalize_per_sample
 from FourierKernels import specKernel, freeSpaceKernelsPIF, freeSpaceKernelsPIC
+import plot_diagnostics as PD
 
 class PICVisualizer:
     def __init__(self, args):
@@ -36,7 +37,7 @@ class PICVisualizer:
         self.DT = args.dt
         self.T = args.T
         self.VT = args.Vt
-        self.NT = int(self.T/self.DT)
+        self.NT = int(round(self.T/self.DT))
         self.times = np.linspace(0, self.NT * self.DT, self.NT)   # number of time steps
         self.dim = args.dim
         self.ref = args.ref
@@ -51,6 +52,9 @@ class PICVisualizer:
         if(self.testCase == 'cyclotron'):
             self.L = np.array([1, 1])
             self.B0 = cp.array([0,0,300]) # Constant external magnetic field
+        elif(self.testCase == 'penning'):
+            self.L = np.array([25, 25, 25])
+            self.B0 = cp.array([0,0,5]) # Constant external magnetic field
         else:
             sigma = 1.0 #/ np.sqrt(2)
             #sigma = 0.1 #/ np.sqrt(2)
@@ -68,15 +72,40 @@ class PICVisualizer:
             self.Q = self.L[0]/ (self.QM * self.N)                                 # Charge of a particle
             self.rho_back = - self.Q * self.N / self.L[0]                          # background rho
         elif self.dim == 2:
-            #self.Q = self.L[0] * self.L[1] / (self.QM * self.N)
-            self.Q = (self.L[0] * self.L[1] * 10) / (self.QM * self.N)
+            if(self.testCase != 'cyclotron'):
+                self.Q = self.L[0] * self.L[1] / (self.QM * self.N)
+            else:
+                self.Q = (self.L[0] * self.L[1] * 10) / (self.QM * self.N)
             self.rho_back = - self.Q * self.N / (self.L[0] * self.L[1])
         else:
-            self.Q = self.L[0] * self.L[1] * self.L[2] / (self.QM * self.N)
+            if(self.testCase != 'penning'):
+                self.Q = self.L[0] * self.L[1] * self.L[2] / (self.QM * self.N)
+            else:
+                self.Q = 1562.5 / (self.QM * self.N)
             self.rho_back = - self.Q * self.N / (self.L[0] * self.L[1] * self.L[2])
 
 
-        self.xp0,self.vp0 = inv_trans_sampling_gpu(alpha=self.alpha, k=self.kn, L=self.Ln, N=self.N, dim=self.dim, label=self.testCase, ref=self.ref)
+        #if((self.testCase != 'cyclotron') and (self.ref != 'bh')):
+        #    self.xp0,self.vp0 = inv_trans_sampling_gpu(alpha=self.alpha, k=self.kn, L=self.Ln, N=self.N, dim=self.dim, label=self.testCase, ref=self.ref)
+        #else:
+        #Read from PEPC data file
+        output_keys_E = "Eout_bh"
+        output_keys_pos = "pos_bh"
+        output_keys_vel = "vel_bh"
+        #output_keys_label = "label_bh"
+        #file_path = "/p/scratch/pepcexa/muralikrishnan1/PEPC_cyclotron/Q_10x/Np_1million/data/particles/Reference_bh_1000000_cyclotron_unordered.h5"
+        file_path = "/p/project1/pepcexa/muralikrishnan1/operator_learning/scripts/error_scalings/2D_mini_apps_different_methods_test/model_evaluations/cyclotron/Reference_bh_1000000_cyclotron.h5"
+        #file_path = "/p/project1/pepcexa/muralikrishnan1/operator_learning/scripts/error_scalings/3D_mini_apps_test/model_evaluations/weakLandau/Reference_bh/Reference_bh_163840_weakLandau.h5"
+        with h5py.File(file_path, "r") as f:
+            self.xp0 = cp.array(f[output_keys_pos][0], dtype=cp.float32)
+            self.vp0 = cp.array(f[output_keys_vel][0], dtype=cp.float32)
+            #self.label0 = cp.array(f[output_keys_label][0])
+
+        self.xp0 = self.xp0.swapaxes(-1,-2)
+        self.vp0 = self.vp0.swapaxes(-1,-2)
+        #self.label0 = self.label0.swapaxes(-1,-2).squeeze()
+
+
         print(f"Initial conditions done")
         # Set matplotlib defaults (better figures)
         plt.rcParams.update({
@@ -94,6 +123,160 @@ class PICVisualizer:
         filename = f"{name}_run{self.args.runId}.{self.args.imgExt}"
         return filename
 
+
+    def grid_field_energy(self, xp):
+        """
+        Self-field energy (1/2) int |E|^2 dV of a particle configuration, computed on
+        the PIC grid: deposit the charge (with the neutralizing background), solve the
+        periodic Poisson equation and integrate |E_grid|^2 over the cells. Returns the
+        three components int E_i^2 dV. Unlike the particle average V/N sum_p |E(x_p)|^2,
+        this is correct for non-uniform particle distributions such as the Penning cloud,
+        and it depends only on the positions, so it is the same diagnostic for NEOPIC
+        and for the reference.
+        """
+        rho, _, _ = p2g_g2p_nostencil_arrays(XP=xp, DX=self.dxn, NG=self.NG, L=self.Ln, dim=self.dim,
+                                             testCase=self.testCase, Q=self.Q, rho_back=self.rho_back)
+        _, Eg = field(rho=rho, L=self.Ln, dim=self.dim, J=None, T1=None, testCase=self.testCase, NG=self.NG)
+        dV = self.dxn[0] * self.dxn[1] * self.dxn[2]
+        return [cp.sum(Eg[i]**2) * dV for i in range(3)]
+
+    def cyclotron_field_energy(self, xp, return_field=False):
+        """
+        Electrostatic self-energy W = (1/2) sum_p q phi(x_p) of the 2D cyclotron
+        cloud with open boundaries, phi being the free-space potential
+        (G = -ln r / 2pi) from the Vico-Greengard solver of the PIC reference.
+        In 2D, (1/2) int |E|^2 dA diverges logarithmically for a net charge, so W is
+        the energy that enters the conserved total; it is the same position-only
+        diagnostic for NEOPIC, PIC and BH. W is translation invariant, so the
+        positions are shifted (internally, by a multiple of dx fixed per run) to
+        put the cloud in the middle of the solver box: the BH and NEOPIC frames have
+        mean 0, the PIC frame mean L/2 (shift 0). Particles whose TSC stencil leaves
+        the box are skipped (reported once).
+        With return_field=True it also returns the free-space PIC field at the
+        particles, shape (2, N) (zero for skipped particles), and the mask of the
+        particles that were inside the box: (W, E_pic, inside).
+        """
+        NG = self.NG
+        if self._cyc is None:
+            J, T1 = freeSpaceKernelsPIC(NG=NG, L=self.Ln)
+            mean = cp.mean(xp, axis=1)
+            shift = cp.rint((self.Ln / 2 - mean) / self.dxn) * self.dxn
+            self._cyc = dict(J=J, T1=T1, shift=shift[:, None], warned=False)
+        xs = xp + self._cyc["shift"]
+        g = cp.floor(xs / self.dxn[:, None]).astype(cp.int32)
+        inside = cp.all((g >= 1) & (g <= NG - 2), axis=0)
+        n_out = int(xs.shape[1] - int(cp.count_nonzero(inside)))
+        if n_out > 0:
+            xs = xs[:, inside]
+            if not self._cyc["warned"]:
+                print(f"cyclotron_field_energy: {n_out} particles outside the solver box are skipped")
+                self._cyc["warned"] = True
+        rho, _, _ = p2g_g2p_nostencil_arrays(XP=xs, DX=self.dxn, NG=NG, L=self.Ln, dim=2,
+                                             testCase='cyclotron', Q=self.Q)
+        phi, Eg = field(rho=rho, L=self.Ln, dim=2, J=self._cyc["J"], T1=self._cyc["T1"],
+                        testCase='cyclotron', NG=NG)
+        # physical grid nodes sit at [NG:2NG] of the extended grid (as for E in field())
+        phic = phi[NG:2 * NG, NG:2 * NG]
+        _, phip, _ = p2g_g2p_nostencil_arrays(XP=xs, DX=self.dxn, NG=NG, L=self.Ln, dim=2,
+                                              testCase='cyclotron', E=cp.stack([phic, phic]))
+        W = 0.5 * self.Q * cp.sum(phip[0].astype(cp.float64))
+        if not return_field:
+            return W
+        _, Ein, _ = p2g_g2p_nostencil_arrays(XP=xs, DX=self.dxn, NG=NG, L=self.Ln, dim=2,
+                                             testCase='cyclotron', E=Eg)
+        Epic = cp.zeros((2, xp.shape[1]), dtype=cp.float64)
+        Epic[:, inside] = Ein
+        return W, Epic, inside
+
+    def cyclotron_frame(self, xp):
+        """Cloud-centred coordinates (origin at the centre of the solver box after the
+        per-run shift of cyclotron_field_energy, i.e. at the initial centre of the
+        cloud to within dx/2). The same for PIC (mean L/2) and BH/NEOPIC (mean 0)."""
+        return xp + self._cyc["shift"] - self.Ln[:, None] / 2
+
+    def canonical_angular_momentum(self, xc, v):
+        """
+        Canonical angular momentum about the fixed origin of xc for the uniform
+        field B = B_z e_z (vector potential A = B_z/2 (-y, x)):
+            L = sum_p [ m (x v_y - y v_x) + (q B_z / 2) (x^2 + y^2) ],
+        m = Q/QM, q = Q. It is conserved by any self-field made of pairwise central
+        forces (free-space PIC up to discretization, Barnes-Hut up to the tree
+        error), but not built into a learned field. Also returns the rms radius
+        sqrt(<x^2 + y^2>) of the cloud, which carries the magnetic part.
+        v is the mean of v^{n-1/2} and v^{n+1/2} at the positions xc = x^n. For the
+        Boris pusher the mechanical term is scaled by 1 + (omega_c dt/2)^2
+        = 1/cos^2(theta/2): with this factor L is conserved by Boris to round-off for
+        any central self-field (2e-6 in a free-space PIC test at omega_c dt = 3,
+        against 2.6e-2 without it), while a torque from a non-central field error
+        (e.g. Ex 1% too large) shows up directly (2e-3).
+        """
+        m = self.Q / self.QM
+        Bz = self.B0[2]
+        alpha = 1.0 + float(self.QM * Bz * self.DT / 2) ** 2
+        r2 = xc[0].astype(cp.float64)**2 + xc[1].astype(cp.float64)**2
+        mech = alpha * m * cp.sum(xc[0] * v[1] - xc[1] * v[0])
+        mag = 0.5 * self.Q * Bz * cp.sum(r2)
+        return mech + mag, cp.sqrt(cp.mean(r2))
+
+    def _bin2d(self, xc, ext, nb, w=None):
+        """Sum of w (or counts) on an nb x nb grid over [-ext, ext]^2 (index [ix, iy])."""
+        ix = cp.floor((xc[0] + ext) / (2 * ext) * nb).astype(cp.int64)
+        iy = cp.floor((xc[1] + ext) / (2 * ext) * nb).astype(cp.int64)
+        ok = (ix >= 0) & (ix < nb) & (iy >= 0) & (iy < nb)
+        flat = ix[ok] * nb + iy[ok]
+        ww = None if w is None else w[ok].astype(cp.float64)
+        return cp.bincount(flat, weights=ww, minlength=nb * nb).reshape(nb, nb)
+
+    def cyclotron_snapshot(self, xc, E, Epic, it, label):
+        """
+        Binned snapshot of the cyclotron cloud on a fixed grid (the same for every
+        method and step): particle counts, the mean field per bin of the method
+        (E, shape (2, N)) and, if Epic is given, the mean of |E - E_pic| / max|E_pic|
+        per bin. Saved to <evalDir>/snapshots/snap_<label>_<it>.npz and plotted with
+        plot_diagnostics.plot_cyclotron_snapshot (fixed axes and colour scales).
+        """
+        a = self.args
+        ext = float(getattr(a, "snapExtent", 0.3))
+        nb = int(getattr(a, "snapBins", 512))
+        cnt = self._bin2d(xc, ext, nb)
+        safe = cp.maximum(cnt, 1)
+        rec = dict(counts=cp.asnumpy(cnt.astype(cp.int32)),
+                   Ex=cp.asnumpy((self._bin2d(xc, ext, nb, E[0]) / safe).astype(cp.float32)),
+                   Ey=cp.asnumpy((self._bin2d(xc, ext, nb, E[1]) / safe).astype(cp.float32)),
+                   extent=ext, nParticle=int(xc.shape[1]), it=int(it), t=float(it * self.DT),
+                   label=label, testCase=self.testCase, ref=self.ref)
+        if Epic is not None:
+            dE = cp.sqrt(cp.sum((E - Epic)**2, axis=0)) / cp.max(cp.sqrt(cp.sum(Epic**2, axis=0)))
+            rec["dE"] = cp.asnumpy((self._bin2d(xc, ext, nb, dE) / safe).astype(cp.float32))
+        out = self.eval_dir / "snapshots"
+        out.mkdir(parents=True, exist_ok=True)
+        fname = out / f"snap_{label}_{it}_run{a.runId}.npz"
+        np.savez_compressed(fname, **rec)
+        PD.plot_cyclotron_snapshot(rec, str(out), tag=f"run{a.runId}", ext=a.imgExt,
+                                   rho_range=getattr(a, "snapRhoRange", None),
+                                   emax=getattr(a, "snapEmax", None))
+
+    def cyclotron_series(self):
+        """Cyclotron time series of the last picND run, for save_diagnostics."""
+        if self.testCase != 'cyclotron':
+            return {}
+        return dict(Lcan=list(self.Lcan), Rrms=list(self.Rrms), EerrPIC=list(self.EerrPIC))
+
+    def penning_external_energy(self, xp):
+        """
+        Potential energy of the particles in the external quadrupole field of the
+        Penning trap, sum_p q phi_ext(x_p), with
+            E_ext = (-15/L (x-L/2), -15/L (y-L/2), 30/L (z-L/2)) = -grad(phi_ext),
+            phi_ext = 7.5/L [(x-L/2)^2 + (y-L/2)^2] - 15/L (z-L/2)^2.
+        xp has shape (3, N) and holds the positions at the same time level as the
+        kinetic and field energies.
+        """
+        L = self.Ln
+        dx = xp[0] - L[0] / 2
+        dy = xp[1] - L[1] / 2
+        dz = xp[2] - L[2] / 2
+        phi_ext = (7.5 / L[0]) * dx**2 + (7.5 / L[1]) * dy**2 - (15.0 / L[2]) * dz**2
+        return self.Q * cp.sum(phi_ext)
 
     def picND(self, ml_acc: bool = False, model = None, data_file = None):
         """
@@ -133,6 +316,28 @@ class PICVisualizer:
 
         # Energy and momentum tracking
         Ek, Ep, Exp, E, momentum = [], [], [], [], []
+        # External potential energy (Penning trap only); read by eval.py after each run
+        self.Eext = []
+        # free-space kernels and frame shift for the cyclotron field energy (set per run)
+        self._cyc = None
+        # cyclotron: canonical angular momentum, rms radius, relative field error vs PIC
+        self.Lcan, self.Rrms, self.EerrPIC = [], [], []
+        snap_on = bool(getattr(self.args, "snapshots", False)) and self.testCase == 'cyclotron'
+        snap_every = int(getattr(self.args, "snapEvery", 100))
+        snap_label = 'neopic' if ml_acc else self.ref
+        # Particle output (x, v, E) every save_every steps, i.e. at t = 0, save_every*dt, ...
+        # The state is written after the push, so that the stored velocity is the
+        # time-centred average (v^{n-1/2} + v^{n+1/2})/2 at the same time t_n as x^n and E^n
+        # (at n = 0 the initial velocity v^0). The raw half-step velocity v^{n-1/2}
+        # (v^0 at n = 0) is stored as well.
+        save_every = max(int(getattr(self.args, "saveEvery", 1)), 1)
+        pending_save = None
+        # start fresh output files (write_hdf5_step appends); never touch the Barnes-Hut input data
+        out_files = [f"Inference_{self.N}_{self.testCase}.h5"] if ml_acc else \
+                    ([f"Reference_{self.ref}_{self.N}_{self.testCase}.h5"] if self.ref in ('pic', 'pif') else [])
+        for fn in out_files:
+            if os.path.exists(f'{self.eval_dir}/{fn}'):
+                os.remove(f'{self.eval_dir}/{fn}')
 
         if(self.dim == 1):
             Eyp = None
@@ -162,79 +367,43 @@ class PICVisualizer:
             T1 = None
             T2 = None
 
-        for it in range(self.NT):
+        output_keys_E = "Eout_bh"
+        output_keys_pos = "pos_bh"
+        output_keys_vel = "vel_bh"
+        #output_keys_label = "label_bh"
+        #file_path = "/p/scratch/pepcexa/muralikrishnan1/PEPC_cyclotron/Q_10x/Np_1million/data/particles/Reference_bh_1000000_cyclotron_unordered.h5"
+        file_path = "/p/project1/pepcexa/muralikrishnan1/operator_learning/scripts/error_scalings/2D_mini_apps_different_methods_test/model_evaluations/cyclotron/Reference_bh_1000000_cyclotron.h5"
+        #file_path = "/p/project1/pepcexa/muralikrishnan1/operator_learning/scripts/error_scalings/3D_mini_apps_test/model_evaluations/weakLandau/Reference_bh/Reference_bh_163840_weakLandau.h5"
 
-            print(it)
-            if(self.testCase != 'cyclotron'):
-                #Apply periodic BCs
-                #if ml_acc:
-                #    xp = toPeriodicND(x=xp, L=self.Ln, dim=self.dim)
-                #else:
-                xp = toPeriodicND_old(x=xp, L=self.Ln, dim=self.dim)
+        #output_keys_E = "Eout_pic"
+        #output_keys_pos = "pos_pic"
+        #file_path = "/p/project1/pepcexa/muralikrishnan1/operator_learning/scripts/error_scalings/3D_mini_apps_test/Penning_trap_test/IC/Reference_pic_163840_penning.h5"
+        #with h5py.File(file_path, "r") as f:
+        #     Efieldparticle = cp.array(f[output_keys_E][0], dtype=cp.float32)
+        #    xpt = cp.array(f[output_keys_pos][0], dtype=cp.float32)
 
-            # Acceleration
+        #Efieldparticle = Efieldparticle.swapaxes(-1,-2)
+
+        if(self.testCase == 'penning'):
             if ml_acc and model is not None:
-                if(self.ml_time_int == 'explicit'):
-                    e_start = cp.cuda.Event(); e_end = cp.cuda.Event()
-                    e_start.record()
-                    inputs = xp[None, :, :].copy() # [batch=1, channel=dim, particles]
-                    inputs[:, 0, :] = normalize_per_sample(inputs[:, 0, :])
+                inputs = xp[None, :, :].copy() # [batch=1, channel=dim, particles]
+                inputs[:, 0, :] = normalize_per_sample(inputs[:, 0, :])
+                inputs[:, 1, :] = normalize_per_sample(inputs[:, 1, :])
+                inputs[:, 2, :] = normalize_per_sample(inputs[:, 2, :])
 
-                    if(self.dim > 1):
-                        inputs[:, 1, :] = normalize_per_sample(inputs[:, 1, :])
-                    if(self.dim > 2):
-                        inputs[:, 2, :] = normalize_per_sample(inputs[:, 2, :])
-
-                    prediction = model(inputs) # [1, channel=dim, particles]
-                    Efieldparticle = prediction.squeeze()
-                    if(self.dim == 1):
-                        Efieldparticle = Efieldparticle * data_output_std + data_output_mean
-                        #Scale by normalization factor \alpha = Q_tot in 1D for the current problem
-                        Efieldparticle = Efieldparticle * ((self.Q * self.N))
-                        #Subtract volume average of electric field for periodic compatibility
-                        Efieldparticle = Efieldparticle - ((1/self.N) * cp.sum(Efieldparticle))
-                    elif(self.dim == 2):
-                        Efieldparticle[0] = Efieldparticle[0] * data_output_std[0] + data_output_mean[0]
-                        Efieldparticle[1] = Efieldparticle[1] * data_output_std[1] + data_output_mean[1]
-                        ###Scale by normalization factor \alpha = Q_tot / sqrt(L_x * L_y) in 2D for the current problem
-                        Efieldparticle[:,:] = Efieldparticle[:,:] * ((self.Q * self.N)/cp.sqrt(self.Ln[0] * self.Ln[1]))
-                        #Efieldparticle[:,:] = Efieldparticle[:,:] * 3.3
-                        if(self.testCase != 'cyclotron'):
-                            #Subtract volume average of electric field for periodic compatibility
-                            Efieldparticle[0] = Efieldparticle[0] - ((1/self.N) * cp.sum(Efieldparticle[0]))
-                            Efieldparticle[1] = Efieldparticle[1] - ((1/self.N) * cp.sum(Efieldparticle[1]))
-                    else:
-                        Efieldparticle[0] = Efieldparticle[0] * data_output_std[0] + data_output_mean[0]
-                        Efieldparticle[1] = Efieldparticle[1] * data_output_std[1] + data_output_mean[1]
-                        Efieldparticle[2] = Efieldparticle[2] * data_output_std[2] + data_output_mean[2]
-                        #Scale by normalization factor \alpha = Q_tot / (L_x * L_y * L_z)^(2/3) in 3D for the current problem
-                        Efieldparticle[:,:] = Efieldparticle[:,:] * ((self.Q * self.N)/((self.Ln[0] * self.Ln[1] * self.Ln[2])**(2/3)))
-                        #Subtract volume average of electric field for periodic compatibility
-                        Efieldparticle[0] = Efieldparticle[0] - ((1/self.N) * cp.sum(Efieldparticle[0]))
-                        Efieldparticle[1] = Efieldparticle[1] - ((1/self.N) * cp.sum(Efieldparticle[1]))
-                        Efieldparticle[2] = Efieldparticle[2] - ((1/self.N) * cp.sum(Efieldparticle[2]))
-                    #
-                    #self.write_hdf5_step(filename=f"Inference_{self.N}.h5",xp=xp,vp=vp,Efieldparticle=Efieldparticle,pos_key="pos",vel_key="vel",E_key="Eout")
-                    a = accelerateML(E=Efieldparticle, wp=wp, QM=self.QM)
-                    e_end.record()
-                    _ev_start.append(e_start); _ev_end.append(e_end)
-                else:
-                    xp, vp = newton_push_move_xv(model, xp, vp, self.DT, self.QM, self.Q, self.N, self.Ln, self.dim, data_output_std, data_output_mean)
-                    #xp, vp = picard_push_move_xv(model, xp, vp, self.DT, self.QM, self.Q, self.N, self.Ln, self.dim, data_output_std, data_output_mean)
-                    kinetic_energy = kinetic(vp, self.Q, self.QM, wp)
-                    inputs = xp[None, :, :].copy() # [batch=1, channel=dim, particles]
-                    inputs[:, 0, :] = normalize_per_sample(inputs[:, 0, :])
-                    prediction = model(inputs) # [1, channel=dim, particles]
-                    Efieldparticle = prediction.squeeze()
-                    Efieldparticle = Efieldparticle * data_output_std + data_output_mean
-                    #Scale by normalization factor \alpha = Q_tot in 1D for the current problem
-                    Efieldparticle = Efieldparticle * ((self.Q * self.N))
-                    #Subtract volume average of electric field for periodic compatibility
-                    Efieldparticle = Efieldparticle - ((1/self.N) * cp.sum(Efieldparticle))
-
+                prediction = model(inputs) # [1, channel=dim, particles]
+                Efieldparticle = prediction.squeeze()
+                Efieldparticle[0] = Efieldparticle[0] * data_output_std[0] + data_output_mean[0]
+                Efieldparticle[1] = Efieldparticle[1] * data_output_std[1] + data_output_mean[1]
+                Efieldparticle[2] = Efieldparticle[2] * data_output_std[2] + data_output_mean[2]
+                #Scale by normalization factor \alpha = Q_tot / (L_x * L_y * L_z)^(2/3) in 3D for the current problem
+                Efieldparticle[:,:] = Efieldparticle[:,:] * ((self.Q * self.N)/((self.Ln[0] * self.Ln[1] * self.Ln[2])**(2/3)))
+                #Subtract volume average of electric field for periodic compatibility
+                Efieldparticle[0] = Efieldparticle[0] - ((1/self.N) * cp.sum(Efieldparticle[0]))
+                Efieldparticle[1] = Efieldparticle[1] - ((1/self.N) * cp.sum(Efieldparticle[1]))
+                Efieldparticle[2] = Efieldparticle[2] - ((1/self.N) * cp.sum(Efieldparticle[2]))
+                a = accelerateML(E=Efieldparticle, xp=xp, L=self.Ln, testCase=self.testCase, wp=wp, QM=self.QM)
             else:
-                e_start = cp.cuda.Event(); e_end = cp.cuda.Event()
-                e_start.record()
                 if(self.ref == 'pic'):
                     # Interpolation: particle -> grid
                     rho, _, _ = p2g_g2p_nostencil_arrays(XP=xp, DX=self.dxn, NG=self.NG, L=self.Ln, dim=self.dim, testCase=self.testCase, Q=self.Q, rho_back=self.rho_back)
@@ -242,7 +411,7 @@ class PICVisualizer:
                     phi, Eg = field(rho=rho, L=self.Ln, dim=self.dim, J=J, T1=T1, testCase=self.testCase, NG=self.NG)
                     # Interpolation: grid -> particle
                     _, Efieldparticle, a = p2g_g2p_nostencil_arrays(XP=xp, DX=self.dxn, NG=self.NG, L=self.Ln, dim=self.dim, testCase=self.testCase, E=Eg, QM=self.QM)
-                    #self.write_hdf5_step(filename="Reference_pic_{self.N}.h5",xp=xp,vp=vp,Efieldparticle=Efieldparticle,pos_key="pos_pic",E_key="Eout_pic",vel_key="vel_pic")
+                    #self.write_hdf5_step(filename=f"Reference_pic_{self.N}_{self.testCase}.h5",xp=xp,vp=vp,Efieldparticle=Efieldparticle,pos_key="pos_pic",vel_key="vel_pic",E_key="Eout_pic")
                 elif(self.ref == 'pif'):
                     # Interpolation: particle -> Fourier space
                     rhoHat = scatterFourier(XP=xp, SHat=SHat, NG=self.NG, N=self.N, Q=self.Q, L=self.Ln, dim=self.dim, testCase=self.testCase)
@@ -250,82 +419,310 @@ class PICVisualizer:
                     phiHat, EHat = fieldInFourier(rhoHat=rhoHat, L=self.Ln, dim=self.dim, testCase=self.testCase, ref=self.ref, J=J, T1=T1, Q=self.Q, T2=T2)
                     # Interpolation fields (in Fourier space) -> particles
                     Efieldparticle, a = gatherFourier(XP=xp, EHat=EHat, SHat=SHat, QM=self.QM, L=self.Ln, dim=self.dim, testCase=self.testCase)
-                    #self.write_hdf5_step(filename=f"Reference_pif_{self.N}.h5",xp=xp,vp=vp,Efieldparticle=Efieldparticle,pos_key="pos_pif",vel_key="vel_pif",E_key="Eout_pif")
-                e_end.record()
-                _ev_start.append(e_start); _ev_end.append(e_end)
-            
-            if(self.testCase == 'cyclotron'):
-                if (it%100==0) or (it==(self.NT-1)):
-                    if ml_acc:
-                        if(self.ref == 'pif'):
-                            self.visualize_Efield(xp.get(), Efieldparticle.get(), it, f"Efield_pinop_{it}.png")
-                            self.field2D_histogram(xp.get(), NG=512, output_filename=f"rho_pinop_{it}.png")
-                        else:
-                            self.visualize_Efield((xp-self.Ln[0]/2).get(), Efieldparticle.get(), it, f"Efield_pinop_{it}.png")
-                            self.field2D_histogram((xp-self.Ln[0]/2).get(), NG=512, output_filename=f"rho_pinop_{it}.png")
-                    else:
-                        if(self.ref == 'pif'):
-                            self.visualize_Efield(xp.get(), Efieldparticle.get(), it, f"Efield_{self.ref}_{it}.png")
-                            self.field2D_histogram(xp.get(), NG=512, output_filename=f"rho_pif_{it}.png")
-                        else:
-                            self.visualize_Efield((xp-self.Ln[0]/2).get(), Efieldparticle.get(), it, f"Efield_{self.ref}_{it}.png")
-                            self.field2D_histogram((xp-self.Ln[0]/2).get(), NG=512, output_filename=f"rho_pic_{it}.png")
-
-            if(self.ml_time_int != 'implicit'):
-                vp, kinetic_energy = push(vp=vp, a=a, DT=self.DT, Q=self.Q, QM=self.QM, wp=wp, it=it, testCase=self.testCase, B0=self.B0)
-                xp, wp = move(xp=xp, vp=vp, wp=wp, DT=self.DT, L=self.Ln, it=it)
+                    #self.write_hdf5_step(filename=f"Reference_pif_{self.N}_{self.testCase}.h5",xp=xp,vp=vp,Efieldparticle=Efieldparticle,pos_key="pos_pif",vel_key="vel_pif",E_key="Eout_pif")
 
 
-            if(self.dim == 1):
-                # Mometum: Note since vp is at half time steps the momentum is calculated at these indices rather than integer time steps
-                mom = cp.abs(cp.sum(self.Q * vp / self.QM))
-                # Electric field energy
-                Egpx = cp.sum(Efieldparticle[:] ** 2) * self.Ln[0] / self.N
-                # Compute potential energy
-                Epotential = 0.5 * Egpx
-            elif(self.dim == 2):
+
+        with h5py.File(file_path, "r") as f:
+            for it in range(self.NT):
+
+                print(it)
+                if(self.testCase == 'penning'):
+                    vp = push1(vp, a, self.DT, self.QM, self.B0)
+                    xp, wp = move(xp=xp, vp=vp, wp=wp, DT=self.DT, L=self.Ln, it=it)
+
                 if(self.testCase != 'cyclotron'):
+                    #Apply periodic BCs
+                    #if ml_acc:
+                    #    xp = toPeriodicND(x=xp, L=self.Ln, dim=self.dim)
+                    #else:
+                    xp = toPeriodicND_old(x=xp, L=self.Ln, dim=self.dim)
+
+                # Acceleration
+                if ml_acc and model is not None:
+                    if(self.ml_time_int == 'explicit'):
+                        e_start = cp.cuda.Event(); e_end = cp.cuda.Event()
+                        e_start.record()
+                        inputs = xp[None, :, :].copy() # [batch=1, channel=dim, particles]
+                        inputs[:, 0, :] = normalize_per_sample(inputs[:, 0, :])
+
+                        if(self.dim > 1):
+                            inputs[:, 1, :] = normalize_per_sample(inputs[:, 1, :])
+                        if(self.dim > 2):
+                            inputs[:, 2, :] = normalize_per_sample(inputs[:, 2, :])
+
+                        prediction = model(inputs) # [1, channel=dim, particles]
+                        Efieldparticle = prediction.squeeze()
+                        if(self.dim == 1):
+                            Efieldparticle = Efieldparticle * data_output_std + data_output_mean
+                            #Scale by normalization factor \alpha = Q_tot in 1D for the current problem
+                            Efieldparticle = Efieldparticle * ((self.Q * self.N))
+                            #Subtract particle average of electric field for zero net self force
+                            Efieldparticle = Efieldparticle - ((1/self.N) * cp.sum(Efieldparticle))
+                        elif(self.dim == 2):
+                            Efieldparticle[0] = Efieldparticle[0] * data_output_std[0] + data_output_mean[0]
+                            Efieldparticle[1] = Efieldparticle[1] * data_output_std[1] + data_output_mean[1]
+                            ###Scale by normalization factor \alpha = Q_tot / sqrt(L_x * L_y) in 2D for the current problem
+                            Efieldparticle[:,:] = Efieldparticle[:,:] * ((self.Q * self.N)/cp.sqrt(self.Ln[0] * self.Ln[1]))
+                            if(self.testCase != 'cyclotron'):
+                                #Subtract particle average of electric field for zero net self force
+                                Efieldparticle[0] = Efieldparticle[0] - ((1/self.N) * cp.sum(Efieldparticle[0]))
+                                Efieldparticle[1] = Efieldparticle[1] - ((1/self.N) * cp.sum(Efieldparticle[1]))
+                        else:
+                            Efieldparticle[0] = Efieldparticle[0] * data_output_std[0] + data_output_mean[0]
+                            Efieldparticle[1] = Efieldparticle[1] * data_output_std[1] + data_output_mean[1]
+                            Efieldparticle[2] = Efieldparticle[2] * data_output_std[2] + data_output_mean[2]
+                            #Scale by normalization factor \alpha = Q_tot / (L_x * L_y * L_z)^(2/3) in 3D for the current problem
+                            Efieldparticle[:,:] = Efieldparticle[:,:] * ((self.Q * self.N)/((self.Ln[0] * self.Ln[1] * self.Ln[2])**(2/3)))
+                            #Subtract particle average of electric field for zero net self force
+                            Efieldparticle[0] = Efieldparticle[0] - ((1/self.N) * cp.sum(Efieldparticle[0]))
+                            Efieldparticle[1] = Efieldparticle[1] - ((1/self.N) * cp.sum(Efieldparticle[1]))
+                            Efieldparticle[2] = Efieldparticle[2] - ((1/self.N) * cp.sum(Efieldparticle[2]))
+                        #
+                        if it % save_every == 0:
+                            pending_save = dict(filename=f"Inference_{self.N}_{self.testCase}.h5", xp=xp.copy(), vp=vp.copy(),
+                                                Efieldparticle=Efieldparticle.copy(), pos_key="pos", vel_key="vel", E_key="Eout")
+                        a = accelerateML(E=Efieldparticle, xp=xp, L=self.Ln, testCase=self.testCase, wp=wp, QM=self.QM)
+                        #Ept = cp.array(f[output_keys_E][it], dtype=cp.float32)
+                        #Efieldparticle = Ept.swapaxes(-1,-2)
+                        e_end.record()
+                        _ev_start.append(e_start); _ev_end.append(e_end)
+                    else:
+                        xp, vp = newton_push_move_xv(model, xp, vp, self.DT, self.QM, self.Q, self.N, self.Ln, self.dim, data_output_std, data_output_mean)
+                        #xp, vp = picard_push_move_xv(model, xp, vp, self.DT, self.QM, self.Q, self.N, self.Ln, self.dim, data_output_std, data_output_mean)
+                        kinetic_energy = kinetic(vp, self.Q, self.QM, wp)
+                        inputs = xp[None, :, :].copy() # [batch=1, channel=dim, particles]
+                        inputs[:, 0, :] = normalize_per_sample(inputs[:, 0, :])
+                        prediction = model(inputs) # [1, channel=dim, particles]
+                        Efieldparticle = prediction.squeeze()
+                        Efieldparticle = Efieldparticle * data_output_std + data_output_mean
+                        #Scale by normalization factor \alpha = Q_tot in 1D for the current problem
+                        Efieldparticle = Efieldparticle * ((self.Q * self.N))
+                        #Subtract volume average of electric field for periodic compatibility
+                        Efieldparticle = Efieldparticle - ((1/self.N) * cp.sum(Efieldparticle))
+
+                else:
+                    e_start = cp.cuda.Event(); e_end = cp.cuda.Event()
+                    e_start.record()
+                    if(self.testCase == "cyclotron" and self.ref == "bh"):
+                        data_E = f[output_keys_E]
+                        data_pos = f[output_keys_pos]
+                        data_vel = f[output_keys_vel]
+                        #data_label = f[output_keys_label]
+                        Efield_pepc = cp.array(data_E[it], dtype=cp.float32)
+                        pos_pepc = cp.array(data_pos[it+1], dtype=cp.float32)
+                        vel_pepc = cp.array(data_vel[it+1], dtype=cp.float32)
+                        pos_pepc = pos_pepc.swapaxes(-1,-2)
+                        vel_pepc = vel_pepc.swapaxes(-1,-2)
+                        #label_pepc = cp.array(data_label[it+1])
+                        Efield_pepc = Efield_pepc.swapaxes(-1,-2)
+                        #label_pepc = label_pepc.swapaxes(-1,-2).squeeze()
+                        vp_old = vp.copy()
+
+                        #sort_idx = cp.argsort(label_pepc)
+                        #label_sorted = label_pepc[sort_idx]
+                        ## Find where each particle from timestep 0
+                        ## occurs in current timestep
+                        #idx = cp.searchsorted(label_sorted, self.label0)
+                        ## Check that every particle was found
+                        #valid = (
+                        #    (idx < label_sorted.size) &
+                        #    (label_sorted[idx] == self.label0)
+                        #)
+                        #print("Matched:", int(cp.sum(valid)), "/", self.label0.size)
+                        #vel_sorted = vel_pepc[:, sort_idx]
+                        #pos_sorted = pos_pepc[:, sort_idx]
+                        #Efield_sorted = Efield_pepc[:, sort_idx]
+                        ## Actual attributes reordered to correspond
+                        ## to the particle ordering at t=0
+                        #vel_actual = vel_sorted[:, idx]
+                        #pos_actual = pos_sorted[:, idx]
+                        #Efield_actual = Efield_sorted[:, idx]
+                        #Efieldparticle = Efield_actual
+                        Efieldparticle = Efield_pepc
+                        #self.write_hdf5_step(filename=f"Reference_{self.ref}_{self.N}_{self.testCase}_corrected.h5",xp=xp,vp=vp,Efieldparticle=Efieldparticle,pos_key="pos_bh",vel_key="vel_bh",E_key="Eout_bh")
+                    else:
+                        if(self.ref == 'pic'):
+                            # Interpolation: particle -> grid
+                            rho, _, _ = p2g_g2p_nostencil_arrays(XP=xp, DX=self.dxn, NG=self.NG, L=self.Ln, dim=self.dim, testCase=self.testCase, Q=self.Q, rho_back=self.rho_back)
+                            # Compute fields
+                            phi, Eg = field(rho=rho, L=self.Ln, dim=self.dim, J=J, T1=T1, testCase=self.testCase, NG=self.NG)
+                            # Interpolation: grid -> particle
+                            _, Efieldparticle, a = p2g_g2p_nostencil_arrays(XP=xp, DX=self.dxn, NG=self.NG, L=self.Ln, dim=self.dim, testCase=self.testCase, E=Eg, QM=self.QM)
+                            #self.write_hdf5_step(filename=f"Reference_pic_{self.N}_{self.testCase}.h5",xp=xp,vp=vp,Efieldparticle=Efieldparticle,pos_key="pos_pic",vel_key="vel_pic",E_key="Eout_pic")
+                            #Ept = cp.array(f[output_keys_E][it], dtype=cp.float32)
+                            #Efieldparticle = Ept.swapaxes(-1,-2)
+                        elif(self.ref == 'pif'):
+                            # Interpolation: particle -> Fourier space
+                            rhoHat = scatterFourier(XP=xp, SHat=SHat, NG=self.NG, N=self.N, Q=self.Q, L=self.Ln, dim=self.dim, testCase=self.testCase)
+                            # Compute fields in Fourier space
+                            phiHat, EHat = fieldInFourier(rhoHat=rhoHat, L=self.Ln, dim=self.dim, testCase=self.testCase, ref=self.ref, J=J, T1=T1, Q=self.Q, T2=T2)
+                            # Interpolation fields (in Fourier space) -> particles
+                            Efieldparticle, a = gatherFourier(XP=xp, EHat=EHat, SHat=SHat, QM=self.QM, L=self.Ln, dim=self.dim, testCase=self.testCase)
+                            if it % save_every == 0:
+                                pending_save = dict(filename=f"Reference_pif_{self.N}_{self.testCase}.h5", xp=xp.copy(), vp=vp.copy(),
+                                                    Efieldparticle=Efieldparticle.copy(), pos_key="pos_pif", vel_key="vel_pif", E_key="Eout_pif")
+                        elif(self.ref == 'bh'):
+                            Ept = cp.array(f[output_keys_E][it], dtype=cp.float32)
+                            Efieldparticle = Ept.swapaxes(-1,-2)
+                    e_end.record()
+                    _ev_start.append(e_start); _ev_end.append(e_end)
+
+                #if(self.testCase == 'cyclotron'):
+                #    if (it%100==0) or (it==(self.NT-1)):
+                #        if ml_acc:
+                #            if(self.ref == 'pif' or self.ref == 'bh'):
+                #                self.visualize_Efield(xp.get(), Efieldparticle.get(), it, f"Efield_neopic_{it}.png")
+                #                self.field2D_histogram(xp.get(), NG=512, output_filename=f"rho_neopic_{it}.png")
+                #            else:
+                #                self.visualize_Efield((xp-self.Ln[0]/2).get(), Efieldparticle.get(), it, f"Efield_neopic_{it}.png")
+                #                self.field2D_histogram((xp-self.Ln[0]/2).get(), NG=512, output_filename=f"rho_neopic_{it}.png")
+                #        else:
+                #            if(self.ref == 'pif' or self.ref == 'bh'):
+                #                self.visualize_Efield(xp.get(), Efieldparticle.get(), it, f"Efield_{self.ref}_{it}.png")
+                #                self.field2D_histogram(xp.get(), NG=512, output_filename=f"rho_{self.ref}_{it}.png")
+                #            else:
+                #                self.visualize_Efield((xp-self.Ln[0]/2).get(), Efieldparticle.get(), it, f"Efield_{self.ref}_{it}.png")
+                #                self.field2D_histogram((xp-self.Ln[0]/2).get(), NG=512, output_filename=f"rho_{self.ref}_{it}.png")
+
+                # External potential energy of the Penning trap (added to the total energy).
+                # Evaluated here, at the positions where the field was just computed and
+                # before any position update, so it belongs to the same time level as the
+                # field energy for both the KDK and the staggered (push, then move) pushers.
+                Eext = 0.0
+                Egrid = None
+                if(self.testCase == 'penning'):
+                    Eext = self.penning_external_energy(xp)
+                    # field energy on the PIC grid at the same positions (see grid_field_energy)
+                    Egrid = self.grid_field_energy(xp)
+                Wcyc = None
+                if(self.testCase == 'cyclotron'):
+                    # free-space electrostatic energy at the same positions (see cyclotron_field_energy),
+                    # and the free-space PIC field at these positions
+                    Wcyc, Epic, inside = self.cyclotron_field_energy(xp, return_field=True)
+                    xc = self.cyclotron_frame(xp)
+                    vp_prev = vp.copy()
+                    # field check: the method's field against the PIC field at the same positions
+                    # (skipped for the PIC reference itself, where it is zero)
+                    check = ml_acc or (self.ref != 'pic')
+                    Emeth = cp.asarray(Efieldparticle, dtype=cp.float64).reshape(2, -1)
+                    if check:
+                        dE = (Emeth - Epic)[:, inside]
+                        self.EerrPIC.append(float(cp.sqrt(cp.sum(dE**2) / cp.sum(Epic[:, inside]**2))))
+                    if snap_on and ((it % snap_every == 0) or (it == self.NT - 1)):
+                        self.cyclotron_snapshot(xc, Emeth, Epic if check else None, it, snap_label)
+
+                if(self.ml_time_int != 'implicit'):
+                    if(self.testCase == 'cyclotron'):
+                        if ml_acc:
+                            vp, kinetic_energy = push(vp=vp, a=a, DT=self.DT, Q=self.Q, QM=self.QM, wp=wp, it=it, testCase=self.testCase, B0=self.B0)
+                            xp, wp = move(xp=xp, vp=vp, wp=wp, DT=self.DT, L=self.Ln, it=it)
+                        else:
+                            if(self.ref == "bh"):
+                                vp = vel_pepc
+                                xp = pos_pepc
+                                #vp = vel_actual
+                                #xp = pos_actual
+                                #Efieldparticle = Efield_actual
+                                if(it == 0):
+                                    kinetic_energy = kinetic(vp_old, self.Q, self.QM)
+                                else:
+                                    #For cases with external magnetic field average the kinetic energies instead of velocities as it is better
+                                    kinetic_energy = (kinetic(vp, self.Q, self.QM) + kinetic(vp_old, self.Q, self.QM))/2
+                            else:
+                                vp, kinetic_energy = push(vp=vp, a=a, DT=self.DT, Q=self.Q, QM=self.QM, wp=wp, it=it, testCase=self.testCase, B0=self.B0)
+                                xp, wp = move(xp=xp, vp=vp, wp=wp, DT=self.DT, L=self.Ln, it=it)
+                    elif(self.testCase == 'penning'):
+                        vp = push2(vp, a, self.DT, self.QM, self.B0)
+                        kinetic_energy = kinetic(vp, self.Q, self.QM)
+                    else:
+                        if ml_acc or (self.ref != 'bh'):
+                            vp, kinetic_energy = push(vp=vp, a=a, DT=self.DT, Q=self.Q, QM=self.QM, wp=wp, it=it, testCase=self.testCase, B0=self.B0)
+                            xp, wp = move(xp=xp, vp=vp, wp=wp, DT=self.DT, L=self.Ln, it=it)
+                        else:
+                            kinetic_energy = kinetic(vp, self.Q, self.QM)
+                            vpt = cp.array(f[output_keys_vel][it+1], dtype=cp.float32)
+                            vp = vpt.swapaxes(-1,-2)
+
+                # deferred particle output: x^n, E^n and the time-centred velocity at t_n
+                if pending_save is not None:
+                    v_half = pending_save.pop("vp")          # v^{n-1/2} (v^0 at n = 0)
+                    if self.testCase == 'penning':
+                        v_cent = vp                          # KDK: vp is already v^n
+                    else:
+                        v_cent = v_half if it == 0 else 0.5 * (v_half + vp)
+                    self.write_hdf5_step(vp=v_cent,
+                                         extra={pending_save["vel_key"] + "_half": v_half},
+                                         attrs=dict(dt=float(self.DT), save_every=int(save_every),
+                                                    vel_note="vel: (v^{n-1/2}+v^{n+1/2})/2 at t_n (v^0 at n=0); vel_half: v^{n-1/2}"),
+                                         **pending_save)
+                    pending_save = None
+
+
+                if(self.dim == 1):
+                    # Mometum: Note since vp is at half time steps the momentum is calculated at these indices rather than integer time steps
+                    mom = cp.abs(cp.sum(self.Q * vp / self.QM))
+                    # Electric field energy
+                    Egpx = cp.sum(Efieldparticle[:] ** 2) * self.Ln[0] / self.N
+                    # Compute potential energy
+                    Epotential = 0.5 * Egpx
+                elif(self.dim == 2):
+                    if(self.testCase != 'cyclotron'):
+                        momx = cp.sum(self.Q * vp[0] / self.QM)
+                        momy = cp.sum(self.Q * vp[1] / self.QM)
+                        mom = cp.sqrt(momx**2 + momy**2)
+                    # Electric field energy
+                    Egpx = cp.sum(Efieldparticle[0,:]**2) * (self.Ln[0] * self.Ln[1]) / self.N
+                    Egpy = cp.sum(Efieldparticle[1,:]**2) * (self.Ln[0] * self.Ln[1]) / self.N
+                    # Compute potential energy
+                    Epotential = 0.5 * (Egpx + Egpy)
+                    if(Wcyc is not None):
+                        # Cyclotron: free-space potential energy (Exp/Eyp keep the particle estimate)
+                        Epotential = Wcyc
+                        Lc, rrms = self.canonical_angular_momentum(xc, 0.5 * (vp_prev + vp))
+                        self.Lcan.append(float(Lc))
+                        self.Rrms.append(float(rrms))
+                else:
                     momx = cp.sum(self.Q * vp[0] / self.QM)
                     momy = cp.sum(self.Q * vp[1] / self.QM)
-                    mom = cp.sqrt(momx**2 + momy**2)
-                # Electric field energy
-                Egpx = cp.sum(Efieldparticle[0,:]**2) * (self.Ln[0] * self.Ln[1]) / self.N
-                Egpy = cp.sum(Efieldparticle[1,:]**2) * (self.Ln[0] * self.Ln[1]) / self.N
-                # Compute potential energy
-                Epotential = 0.5 * (Egpx + Egpy)
-            else:
-                momx = cp.sum(self.Q * vp[0] / self.QM)
-                momy = cp.sum(self.Q * vp[1] / self.QM)
-                momz = cp.sum(self.Q * vp[2] / self.QM)
-                mom = cp.sqrt(momx**2 + momy**2 + momz**2)
-                # Electric field energy
-                Egpx = cp.sum(Efieldparticle[0,:]**2) * (self.Ln[0] * self.Ln[1] * self.Ln[2]) / self.N
-                Egpy = cp.sum(Efieldparticle[1,:]**2) * (self.Ln[0] * self.Ln[1] * self.Ln[2]) / self.N
-                Egpz = cp.sum(Efieldparticle[2,:]**2) * (self.Ln[0] * self.Ln[1] * self.Ln[2]) / self.N
-                # Compute potential energy
-                Epotential = 0.5 * (Egpx + Egpy + Egpz)
+                    momz = cp.sum(self.Q * vp[2] / self.QM)
+                    mom = cp.sqrt(momx**2 + momy**2 + momz**2)
+                    # Electric field energy
+                    if(Egrid is not None):
+                        # Penning trap: grid integral, since the cloud does not fill the box
+                        Egpx, Egpy, Egpz = Egrid
+                    else:
+                        Egpx = cp.sum(Efieldparticle[0,:]**2) * (self.Ln[0] * self.Ln[1] * self.Ln[2]) / self.N
+                        Egpy = cp.sum(Efieldparticle[1,:]**2) * (self.Ln[0] * self.Ln[1] * self.Ln[2]) / self.N
+                        Egpz = cp.sum(Efieldparticle[2,:]**2) * (self.Ln[0] * self.Ln[1] * self.Ln[2]) / self.N
+                    # Compute potential energy
+                    Epotential = 0.5 * (Egpx + Egpy + Egpz)
 
 
 
-            # Append energies and momentum
-            Ek.append(kinetic_energy.get())
-            Ep.append(Epotential.get())
-            E.append((kinetic_energy + Epotential).get())
-            Exp.append(Egpx.get())
-            if(self.dim > 1):
-                Eyp.append(Egpy.get())
-            if(self.dim > 2):
-                Ezp.append(Egpz.get())
-            if(self.testCase != 'cyclotron'):
-                momentum.append(mom.get())
-            else:
-                momentum = None
+                if(self.testCase == 'penning'):
+                    self.Eext.append(Eext.get())
 
-        cp.cuda.Stream.null.synchronize()   # here we do a single sync for the whole run to ensure all events happened
+                # Append energies and momentum
+                Ek.append(kinetic_energy.get())
+                Ep.append(Epotential.get())
+                E.append((kinetic_energy + Epotential + Eext).get())
+                Exp.append(Egpx.get())
+                if(self.dim > 1):
+                    Eyp.append(Egpy.get())
+                if(self.dim > 2):
+                    Ezp.append(Egpz.get())
+                if(self.testCase != 'cyclotron'):
+                    momentum.append(mom.get())
+                else:
+                    momentum = None
 
-        times_acc = [cp.cuda.get_elapsed_time(s, e) for s, e in zip(_ev_start, _ev_end)]
-        time_acc_mean = np.round(np.mean(times_acc), 3)   # already in ms
-        print(f"Average acceleration time per iteration: {time_acc_mean:.3f} millisec")
+            cp.cuda.Stream.null.synchronize()   # here we do a single sync for the whole run to ensure all events happened
+
+            times_acc = [cp.cuda.get_elapsed_time(s, e) for s, e in zip(_ev_start, _ev_end)]
+            #Starting from 1 and not 0 to exclude the startup time
+            time_acc_mean = np.round(np.mean(times_acc[1:]), 3)   # already in ms
+            print(f"Average acceleration time per iteration: {time_acc_mean:.3f} millisec")
 
 
         return xp, vp, wp, E, Ek, Ep, momentum, Exp, Eyp, Ezp, time_acc_mean
@@ -377,125 +774,39 @@ class PICVisualizer:
         plt.clf()
         return filename
 
+    # ------------------------------------------------------------------
+    # Energy, conservation and field-energy plots now live in
+    # plot_diagnostics.py; these wrappers keep the old interface.
+    # ------------------------------------------------------------------
+    def _records(self, ref_kw, pred_kw):
+        meta = dict(ref=self.ref, nParticle=self.N, dim=self.dim, testCase=self.testCase,
+                    dt=self.DT, T=self.T, kc=float(self.k[0]), alpha=self.alpha,
+                    runId=self.args.runId)
+
+        def rec(kind, kw):
+            d = {k: v for k, v in kw.items() if v is not None and len(v) > 0}
+            if not d:
+                return None
+            d.update(meta, kind=kind)
+            return d
+        return rec("pred", pred_kw), rec("ref", ref_kw)
+
     def energy(self, ERef=None, EPred=None, EkRef=None, EpRef=None, EkPred=None, EpPred=None):
-        plt.figure()
-        filename = self._img_path("Energy")
-        if ERef is not None:
-            plt.plot(self.times, ERef / ERef[0], label='TotalEnergyRef', color='orange')
-        if EPred is not None:
-            plt.plot(self.times, EPred / EPred[0], label='TotalEnergyPred', linestyle="--", color='black')
-        if EkRef is not None:
-            plt.plot(self.times, EkRef / ERef[0], label='KERef', color='blue')
-        if EkPred is not None:
-            plt.plot(self.times, EkPred / EPred[0], label='KEPred', linestyle="--", color='blue')
-        if EpRef is not None:
-            plt.plot(self.times, EpRef / ERef[0], label='PERef', color='green')
-        if EpPred is not None:
-            plt.plot(self.times, EpPred / EPred[0], label='PEPred', linestyle="--", color='red')
-        plt.yscale('log')
-        plt.ylabel('Normalized Energy')
-        plt.xlabel(r'$\omega_p t$')
-        plt.legend()
-        plt.grid(True)
-        plt.title("Energy")
-        plt.tight_layout()
-        plt.savefig(f"{self.eval_dir}/{filename}", dpi=200)
-        plt.clf()
-        return filename
+        pred, ref = self._records(dict(energy=ERef, Ek=EkRef, Ep=EpRef),
+                                  dict(energy=EPred, Ek=EkPred, Ep=EpPred))
+        return PD.plot_energy(pred, ref, f"{self.eval_dir}/{self._img_path('Energy')}")
 
     def conservation_errors(self, ERef=None, EPred=None, pRef=None, pPred=None):
-        plt.figure()
-        filename = self._img_path("conservation_errors")
-        if ERef is not None:
-            plt.plot(self.times, np.abs(ERef - ERef[0]) / np.abs(ERef[0]), label='EnergyRef', color='orange')
-        if pRef is not None:
-            plt.plot(self.times, np.abs(pRef - pRef[0]) / np.abs(pRef[0]), label='MomentumRef', color='black')
-        if EPred is not None:
-            plt.plot(self.times, np.abs(EPred - EPred[0]) / np.abs(EPred[0]), label='EnergyPred', color='blue', linestyle="--")
-        if pPred is not None:
-            plt.plot(self.times, np.abs(pPred - pPred[0]) / np.abs(pPred[0]), label='MomentumPred', color='red', linestyle="--")
-        plt.yscale('log')
-        plt.ylabel('Relative Error')
-        plt.xlabel(r'$\omega_p t$')
-        plt.title("Error in Conservation")
-        plt.legend()
-        plt.grid(True)
-        plt.tight_layout()
-        plt.savefig(f"{self.eval_dir}/{filename}", dpi=200)
-        plt.clf()
-        return filename
+        pred, ref = self._records(dict(energy=ERef, momentum=pRef),
+                                  dict(energy=EPred, momentum=pPred))
+        return PD.plot_conservation(pred, ref, f"{self.eval_dir}/{self._img_path('conservation_errors')}")
 
     def landau_decay(self, Ex=None, ExPred=None, Ey=None, EyPred=None, Ez=None, EzPred=None, label='weakLandau'):
-        a = np.linspace(0, (self.NT - 1) * self.DT, self.NT)
-        #pp = period(self.k[0])
-        #b = phiMax[int(pp // (2 * self.DT))] * np.exp((a[0:2000] - pp / 2) * decayRate(self.k[0]))
-        plt.figure()
-        filename = self._img_path("landau_decay_rateRef")
-        if Ex is not None:
-            plt.plot(a, Ex, label=r'$\int ERef_x^2 dV$', color='blue')
-        if Ey is not None:
-            plt.plot(a, Ey, label=r'$\int ERef_y^2 dV$', color='orange')
-        if Ez is not None:
-            plt.plot(a, Ez, label=r'$\int ERef_z^2 dV$', color='black')
-        #plt.plot(a[0:2000], b, label='Predicted Decay Rate', color='green', linestyle="--")
-        if(label == 'weakLandau'):
-            gamma1 = -0.3066
-        else:
-            gamma1 = -0.562
-            gamma2 = 0.168
-            ind2 = np.argmin(np.abs(a - 20.592))
-            theo_ref2 = np.exp(gamma2 * a)
-            if ExPred is not None:
-                theo_ref2 = (ExPred[ind2]/theo_ref2[ind2])*theo_ref2
-            else:
-                theo_ref2 = (Ex[ind2]/theo_ref2[ind2])*theo_ref2
-
-
-        ind1 = np.argmin(np.abs(a - 2.5))
-        theo_ref1 = np.exp(gamma1 * a)
-        if ExPred is not None:
-            theo_ref1 = (ExPred[ind1]/theo_ref1[ind1])*theo_ref1
-        else:
-            theo_ref1 = (Ex[ind1]/theo_ref1[ind1])*theo_ref1
-        plt.plot(a, theo_ref1, label='Predicted Decay Rate', color='seagreen')
-        if(label == 'strongLandau'):
-            plt.plot(a, theo_ref2, label='Predicted Growth Rate', color='red')
-        if ExPred is not None:
-            plt.plot(a, ExPred, label=r'$\int EPred_x^2 dV$', color='blue', linestyle="--")
-        if EyPred is not None:
-            plt.plot(a, EyPred, label=r'$\int EPred_y^2 dV$', color='orange', linestyle="--")
-        if EzPred is not None:
-            plt.plot(a, EzPred, label=r'$\int EPred_z^2 dV$', color='black', linestyle="--")
-        plt.title(f'Landau Damping Decay Rate (k={self.k})')
-        plt.yscale('log')
-        if EzPred is not None:
-            plt.ylabel(r'$\int E_x^2 dV$, $\int E_y^2 dV$, $\int E_z^2 dV$')
-        elif EyPred is not None:
-            plt.ylabel(r'$\int E_x^2 dV$, $\int E_y^2 dV$')
-        else:
-            plt.ylabel(r'$\int E_x^2 dV$')
-        plt.xlabel(r'$\omega_p t$')
-        plt.legend()
-        plt.grid(True)
-        if(self.dim == 1):
-            if(label == 'strongLandau'):
-                plt.ylim(1e-5,10)
-            #if(label == 'weakLandau'):
-            #    plt.ylim(1e-5,1e-1)
-        elif(self.dim == 2):
-            if(label == 'strongLandau'):
-                plt.ylim(1e-3,None)
-            if(label == 'weakLandau'):
-                plt.ylim(1e-4,None)
-        else:
-            if(label == 'strongLandau'):
-                plt.ylim(1e-3,1e4)
-            if(label == 'weakLandau'):
-                plt.ylim(1e-3,20)
-        plt.tight_layout()
-        plt.savefig(f"{self.eval_dir}/{filename}", dpi=200)
-        plt.clf()
-        return filename
+        pred, ref = self._records(dict(Ex=Ex, Ey=Ey, Ez=Ez), dict(Ex=ExPred, Ey=EyPred, Ez=EzPred))
+        for d in (pred, ref):
+            if d is not None:
+                d["testCase"] = label
+        return PD.plot_field_energy(pred, ref, f"{self.eval_dir}/{self._img_path('landau_decay_rateRef')}")
 
     def visualize_spatial_comparison(self, true_positions, predicted_positions, true_efield, predicted_efield, timestep, output_filename):
         """
@@ -570,6 +881,8 @@ class PICVisualizer:
         pos_key="pos",
         vel_key="vel",
         E_key="Eout",
+        extra=None,
+        attrs=None,
     ):
         """
         Append one inference time step to an HDF5 file.
@@ -581,7 +894,7 @@ class PICVisualizer:
 
         xp : cupy.ndarray
             Particle positions of shape [2, Np].
-        
+
         vp : cupy.ndarray
             Particle velocities of shape [2, Np].
 
@@ -602,8 +915,9 @@ class PICVisualizer:
         pos = cp.asnumpy(xp.T.astype(cp.float32))
         vel = cp.asnumpy(vp.T.astype(cp.float32))
         E = cp.asnumpy(Efieldparticle.T.astype(cp.float32))
+        extra_np = {k: cp.asnumpy(v.T.astype(cp.float32)) for k, v in (extra or {}).items()}
 
-        
+
         first_time = not os.path.exists(f'{self.eval_dir}/{filename}')
 
         with h5py.File(f'{self.eval_dir}/{filename}', "a") as f:
@@ -627,7 +941,7 @@ class PICVisualizer:
                     chunks=(1, Np, 2),
                     compression="gzip",
                 )
-                
+
                 f.create_dataset(
                     E_key,
                     data=E[np.newaxis, :, :],
@@ -635,6 +949,17 @@ class PICVisualizer:
                     chunks=(1, Np, 2),
                     compression="gzip",
                 )
+
+                for k, arr in extra_np.items():
+                    f.create_dataset(
+                        k,
+                        data=arr[np.newaxis, :, :],
+                        maxshape=(None,) + arr.shape,
+                        chunks=(1,) + arr.shape,
+                        compression="gzip",
+                    )
+                for k, val in (attrs or {}).items():
+                    f.attrs[k] = val
 
             else:
 
@@ -651,6 +976,10 @@ class PICVisualizer:
                 dset_pos[t] = pos
                 dset_vel[t] = vel
                 dset_E[t] = E
+
+                for k, arr in extra_np.items():
+                    f[k].resize(t + 1, axis=0)
+                    f[k][t] = arr
 
     def visualize_Efield(self, positions, efield, timestep, output_filename):
         """
@@ -673,7 +1002,7 @@ class PICVisualizer:
 
         # --- 2. Create the 2x2 plot grid ---
         fig, axes = plt.subplots(1, 2, figsize=(12, 6), dpi=150)
-        fig.suptitle(f'Spatial E-Field Comparison for Timestep {timestep}', fontsize=20)
+        #fig.suptitle(f'Spatial E-Field Comparison for Timestep {timestep}', fontsize=20)
 
         # --- 3. Plot the Ex comparison (Top Row) ---
         # Predicted Ex
@@ -765,66 +1094,8 @@ class PICVisualizer:
         #rho_norm = matplotlib.colors.Normalize(vmin=0, vmax=rho_vmax)
 
     def instability(self, Ex = None, ExPred = None, Ey = None, EyPred = None, Ez = None, EzPred = None, label='tsi'):
-        a = np.linspace(0, (self.NT - 1) * self.DT, self.NT)
-        plt.figure()
-        filename = self._img_path("growth_rate")
-        if Ex is not None:
-            plt.plot(a, Ex, label=r'$\int ERef_x^2 dV$', color='blue')
-        if Ey is not None:
-            plt.plot(a, Ey, label=r'$\int ERef_y^2 dV$', color='orange')
-        if Ez is not None:
-            plt.plot(a, Ez, label=r'$\int ERef_z^2 dV$', color='black')
-        if(label == 'tsi'):
-            gamma = 0.4952
-        else:
-            gamma = 0.356
-        ind = np.argmin(np.abs(a - 8.0))
-        theo_ref = np.exp(gamma * a)
-        if EzPred is not None:
-            theo_ref = (EzPred[ind]/theo_ref[ind])*theo_ref
-        else:
-            if EyPred is not None:
-                theo_ref = (EyPred[ind]/theo_ref[ind])*theo_ref
-            else:
-                theo_ref = (ExPred[ind]/theo_ref[ind])*theo_ref
-
-        plt.plot(a, theo_ref, label='predicted growth rate', color='seagreen')
-        if ExPred is not None:
-            plt.plot(a, ExPred, label=r'$\int EPred_x^2 dV$', color='blue', linestyle="--")
-        if EyPred is not None:
-            plt.plot(a, EyPred, label=r'$\int EPred_y^2 dV$', color='orange', linestyle="--")
-        if EzPred is not None:
-            plt.plot(a, EzPred, label=r'$\int EPred_z^2 dV$', color='black', linestyle="--")
-        plt.yscale('log')
-        ax = plt.gca()
-        if(self.dim == 1):
-            if(label == 'tsi'):
-                ax.set_ylim([1e-4,1e2])
-            else:
-                ax.set_ylim([1e-4,1e1])
-        elif(self.dim == 2):
-            if(label == 'tsi'):
-                ax.set_ylim([1e-4,1e3])
-            else:
-                ax.set_ylim([None,1e2])
-        else:
-            if(label == 'tsi'):
-                #ax.set_ylim([1e-4,1e4])
-                #ax.set_ylim([None,1e4])
-                ax.set_ylim([None,1e9])
-            else:
-                #ax.set_ylim([1e1,1e4])
-                ax.set_ylim([None,1e5])
-        if EzPred is not None:
-            plt.ylabel(r'$\int E_x^2 dV$, $\int E_y^2 dV$, $\int E_z^2 dV$')
-        elif EyPred is not None:
-            plt.ylabel(r'$\int E_x^2 dV$, $\int E_y^2 dV$')
-        else:
-            plt.ylabel(r'$\int E_x^2 dV$')
-        plt.xlabel(r'normalized time unit: $\omega_p$t', fontsize='14')
-        plt.legend()
-        plt.grid(color='gray')
-        plt.tight_layout()
-        plt.savefig(f'{self.eval_dir}/{filename}', dpi=200)
-        plt.clf()
-        return filename
+        pred, ref = self._records(dict(Ex=Ex, Ey=Ey, Ez=Ez), dict(Ex=ExPred, Ey=EyPred, Ez=EzPred))
+        for d in (pred, ref):
+            if d is not None:
+                d["testCase"] = label
+        return PD.plot_field_energy(pred, ref, f"{self.eval_dir}/{self._img_path('growth_rate')}")

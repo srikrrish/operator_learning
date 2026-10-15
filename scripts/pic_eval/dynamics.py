@@ -61,19 +61,33 @@ def accelerate(M: cp.ndarray,
     return a, Eout
 
 
-def accelerateML(E: cp.ndarray, wp: float, QM: float):
+def accelerateML(E: cp.ndarray, xp: cp.ndarray, L: float, testCase: str, wp: float, QM: float):
     """
     Compute particle acceleration for ML-predicted electric fields.
 
     Args:
         E (cp.ndarray): Electric field at particle positions.
+        xp (cp.ndarray): Particle positions
+        L (float): Length array of the domain
+        testCase (str): Testcase label
         wp (float): Particle weights.
         QM (float): Charge-to-mass ratio (q/m).
 
     Returns:
         cp.ndarray: Particle accelerations.
     """
-    a = E * QM / wp
+    
+    if(testCase == 'penning'):
+        #Add quadrupole external electric field
+        E_ext = cp.zeros_like(E)
+        E_ext[0] = -((15 / L[0]) * (xp[0] - (L[0]/2)))
+        E_ext[1] = -((15 / L[1]) * (xp[1] - (L[1]/2)))
+        E_ext[2] =  ((30 / L[2]) * (xp[2] - (L[2]/2)))
+        
+        a = (E + E_ext) * QM / wp
+    else:
+        a = E * QM / wp
+
     
     return a
 
@@ -261,6 +275,44 @@ def residual_xv_torch(model, y_torch, y_old_torch, DT, QM, Q, N, std, mean):
 
     return torch.cat([Rx, Rv])
 
+def to_3d(x):
+    if x.shape[0] == 3:
+        return x
+    elif x.shape[0] == 2:
+        return cp.concatenate(
+            (x, cp.zeros((1, x.shape[1]), dtype=x.dtype)),
+            axis=0
+        )
+    else:
+        raise ValueError(f"Expected 2D or 3D array, got {x.shape[0]}D")
+
+
+def push1(vp, a, DT, QM, B0):
+
+    # --- Kick 1 (eq. 4a): explicit half-step, uses old v in B force ---
+    alpha = QM * DT / 2 
+    vhx = vp[0] + ((DT / 2) * a[0]) + (alpha * vp[1] * B0[2])
+    vhy = vp[1] + ((DT / 2) * a[1]) - (alpha * vp[0] * B0[2])
+    vhz = vp[2] + ((DT / 2) * a[2])
+
+    return cp.array([vhx, vhy, vhz])
+    
+
+def push2(vp, a, DT, QM, B0):
+
+    alpha = QM * DT / 2
+    beta  = alpha * B0[2]
+    DrInv = 1.0 / (1.0 + beta**2)
+
+    # --- Kick 2 (eq. 4c): Boris trick, analytical solution of implicit system ---
+    vx_new = DrInv * (vp[0] + (DT / 2)*a[0] + alpha * (vp[1]*B0[2] + (DT / 2)*B0[2]*a[1]))
+    vy_new = DrInv * (vp[1] + (DT / 2)*a[1] - alpha * (vp[0]*B0[2] + (DT / 2)*B0[2]*a[0]))
+    vz_new = vp[2] + (DT / 2) * a[2]
+
+
+    return cp.array([vx_new, vy_new, vz_new])
+
+
 def push(vp: cp.ndarray, a: cp.ndarray, 
          DT: float, Q: float, 
          QM: float, wp: float,
@@ -284,32 +336,65 @@ def push(vp: cp.ndarray, a: cp.ndarray,
         vp_new (cp.ndarray): Updated particle velocities.
         kinetic_energy (float): Kinetic energy after update.
     """
-    if it == 0:
-        if(testCase == 'cyclotron'):
-            Ek = kinetic(vp, Q, QM, wp)
-            #vp = vp + DT * (a + QM * cp.cross(vp, B0, axisa=0)[:, 0:2].T) / 2
-            #return vp, Ek
-            DT_half = DT / 2
-            Vm = vp + a * DT_half / 2
-            Vprime = Vm + cp.cross(Vm, B0, axisa=0)[:, 0:2].T * QM * DT_half / 2
-            Vp = Vm + cp.cross(Vprime, B0, axisa=0)[:, 0:2].T * QM * DT_half / (1 + (cp.linalg.norm(B0)*QM*DT_half/2) ** 2)
-            new_vp = Vp + a * DT_half / 2
-            vp = new_vp
-            return vp, Ek
-        else:
-            return vp + a * DT / 2, kinetic(vp, Q, QM, wp)
-
+    #PEPC BH uses v^{-1/2} formulation for Boris so we are matching it here
+    #if ((it == 0) and (testCase != 'cyclotron')):
+    if (it == 0):
+        DT_eff = DT / 2
     else:
-        if(testCase == 'cyclotron'):
-            Vm = vp + a * DT / 2
-            Vprime = Vm + cp.cross(Vm, B0, axisa=0)[:, 0:2].T * QM * DT / 2
-            Vp = Vm + cp.cross(Vprime, B0, axisa=0)[:, 0:2].T * QM * DT / (1 + (cp.linalg.norm(B0)*QM*DT/2) ** 2)
-            new_vp = Vp + a * DT / 2
-            Ek = kinetic((vp + new_vp) / 2, Q, QM, wp)
-            vp = new_vp
-            return vp, Ek
+        DT_eff = DT
+
+    if((testCase == 'cyclotron') or (testCase == 'penning')):
+        v = to_3d(vp)
+        a = to_3d(a)
+
+        Vm = v + a * DT_eff / 2
+        t = B0 * QM * DT_eff / 2
+        Vprime = Vm + cp.cross(Vm, t, axisa=0, axisb=0, axisc=0)
+        s = 2 * t / (1 + cp.dot(t, t))
+        Vp = Vm + cp.cross(Vprime, s, axisa=0, axisb=0, axisc=0)
+
+        new_vp = Vp + a * DT_eff / 2
+        new_vp = new_vp[:vp.shape[0]]
+    else:
+        new_vp = vp + a * DT_eff
+
+    if((testCase == 'cyclotron')):
+        #For cases with external magnetic field average the kinetic energies instead of velocities as it is better
+        return new_vp, (kinetic(vp, Q, QM, wp) + kinetic(new_vp, Q, QM, wp))/2
+    else:
+        if it == 0:
+            return new_vp, kinetic(vp, Q, QM, wp)
         else:
-            return vp + a * DT, kinetic((vp + (vp + a * DT))/2, Q, QM, wp)
+            if((testCase == 'penning')):
+                #For cases with external magnetic field average the kinetic energies instead of velocities as it is better
+                return new_vp, (kinetic(vp, Q, QM, wp) + kinetic(new_vp, Q, QM, wp))/2
+            else:
+                return new_vp, kinetic((vp + new_vp)/2, Q, QM, wp)
+            
+    #if it == 0:
+    #    if((testCase == 'cyclotron') or (testCase == 'penning')):
+    #        #Ek = kinetic(vp, Q, QM, wp)
+    #        #DT_half = DT / 2
+    #        #Vm = vp + a * DT_half / 2
+    #        #Vprime = Vm + cp.cross(Vm, B0, axisa=0)[:, 0:2].T * QM * DT_half / 2
+    #        #Vp = Vm + cp.cross(Vprime, B0, axisa=0)[:, 0:2].T * QM * DT_half / (1 + (cp.linalg.norm(B0)*QM*DT_half/2) ** 2)
+    #        #new_vp = Vp + a * DT_half / 2
+    #        #vp = new_vp
+    #        return vp, Ek
+    #    else:
+    #        return vp + a * DT / 2, kinetic(vp, Q, QM, wp)
+
+    #else:
+    #    if((testCase == 'cyclotron') or (testCase == 'penning')):
+    #        #Vm = vp + a * DT / 2
+    #        #Vprime = Vm + cp.cross(Vm, B0, axisa=0)[:, 0:2].T * QM * DT / 2
+    #        #Vp = Vm + cp.cross(Vprime, B0, axisa=0)[:, 0:2].T * QM * DT / (1 + (cp.linalg.norm(B0)*QM*DT/2) ** 2)
+    #        #new_vp = Vp + a * DT / 2
+    #        #Ek = kinetic((vp + new_vp) / 2, Q, QM, wp)
+    #        #vp = new_vp
+    #        return vp, Ek
+    #    else:
+    #        return vp + a * DT, kinetic((vp + (vp + a * DT))/2, Q, QM, wp)
 
 
 def move(xp: cp.ndarray, vp: cp.ndarray,

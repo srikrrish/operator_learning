@@ -214,9 +214,20 @@ def createDatasetFromPIC(picFile: str,
     #output_keys = ["Eout_cyclotron_pepc_500k"]
     
     #2D PIF weakLandau dataset for error scaling
-    input_keys = ["pos_weakLandau_pif_800k"]
-    output_keys = ["Eout_weakLandau_pif_800k"]
+    #input_keys = ["pos_weakLandau_pif_800k"]
+    #output_keys = ["Eout_weakLandau_pif_800k"]
+    
+    #2D PIF+PIC+BH dataset for error scaling
+    #input_keys = ["weakLandau/pos_pif", "strongLandau/pos_pif", "tsi/pos_pic", "bti/pos_pic", "cyclotron/pos_cyclotron_pepc_500k"]
+    #output_keys = ["weakLandau/Eout_pif", "strongLandau/Eout_pif", "tsi/Eout_pic", "bti/Eout_pic", "cyclotron/Eout_cyclotron_pepc_500k"]
 
+    #3D PIF+PIC+BH dataset for error scaling
+    #input_keys = ["weakLandau/pos_bh", "strongLandau/pos_bh", "tsi/pos_pif", "bti/pos_pif", "penning/pos_pic"]
+    #output_keys = ["weakLandau/Eout_bh", "strongLandau/Eout_bh", "tsi/Eout_pif", "bti/Eout_pif", "penning/Eout_pic"]
+    
+    #3D BH+PIF dataset for error scaling
+    input_keys = ["weakLandau/pos_bh", "strongLandau/pos_bh", "tsi/pos_pif", "bti/pos_pif"]
+    output_keys = ["weakLandau/Eout_bh", "strongLandau/Eout_bh", "tsi/Eout_pif", "bti/Eout_pif"]
     #3D BH + PIF dataset
     #input_keys = ["pos_weakLandau_bh_100k", "pos_strongLandau_pif_100k", "pos_penning_pif_100k"]
     #output_keys = ["Eout_weakLandau_bh_100k", "Eout_strongLandau_pif_100k", "Eout_penning_pif_100k"]
@@ -237,6 +248,9 @@ def createDatasetFromPIC(picFile: str,
     #input_keys = ["pos_strongLandau_pif_100k", "pos_penning_pif_100k"]
     #output_keys = ["Eout_strongLandau_pif_100k", "Eout_penning_pif_100k"]
 
+    #3D PIC Penning trap dataset
+    #input_keys = ["pos_pic"]
+    #output_keys = ["Eout_pic"]
     # Load inputs and outputs
     inputs_list = load_h5Dataset(picFile, input_keys, iEnd, step)
     outputs_list = load_h5Dataset(picFile, output_keys, iEnd, step)
@@ -252,19 +266,20 @@ def createDatasetFromPIC(picFile: str,
         outputs = outp.swapaxes(-1,-2)   # (timstep, channel=dim, electricField)
 
 
-    #q1_xsize = sum(t.shape[0] for t in inputs_list[:3])
-    q1_xsize = sum(t.shape[0] for t in inputs_list[:1])
+    q1_xsize = sum(t.shape[0] for t in inputs_list[:3])
+    #q1_xsize = sum(t.shape[0] for t in inputs_list[:1])
     # Scale by \alpha = Q_tot for 1D, \alpha = Q_tot / sqrt(L_x*L_y) for 2D and \alpha = Q_tot / (L_x*L_y*L_z)^(2/3) for 3D. 
     # For weakLandau, strongLandau, bump-on-tail instability and two-stream instability it boils down to 
     # \alpha = -L irrespective of dimensions
     #outputs[:q1_xsize,:,:] = outputs[:q1_xsize,:,:] / (-(10))
     outputs[:q1_xsize,:,:] = outputs[:q1_xsize,:,:] / (-(2 * np.pi / 0.5))
+    #outputs[:q1_xsize,:,:] = outputs[:q1_xsize,:,:] / (-(1562.5 / (25**2)))
     #outputs[q1_xsize:(q1_xsize + inputs_list[2].shape[0]),:,:] = outputs[q1_xsize:(q1_xsize + inputs_list[2].shape[0]),:,:] / (-(2 * np.pi / (0.5 * 0.1)))
     #outputs[(q1_xsize + inputs_list[2].shape[0]):,:,:] = outputs[(q1_xsize + inputs_list[2].shape[0]):,:,:] / (-(2 * np.pi / (0.21 * (1 / np.sqrt(2)))))
-    #outputs[q1_xsize:(q1_xsize + inputs_list[3].shape[0]),:,:] = outputs[q1_xsize:(q1_xsize + inputs_list[3].shape[0]),:,:] / (-(2 * np.pi / 0.21))
+    outputs[q1_xsize:(q1_xsize + inputs_list[3].shape[0]),:,:] = outputs[q1_xsize:(q1_xsize + inputs_list[3].shape[0]),:,:] / (-(2 * np.pi / 0.21))
     #outputs[q1_xsize:,:,:] = outputs[q1_xsize:,:,:] / (-(1562.5 / (25**2))) # Q_tot = -1562.5 and L_x=L_y=L_z=25 for Penning trap
-    #outputs[(q1_xsize + inputs_list[3].shape[0]):,:,:] = outputs[(q1_xsize + inputs_list[3].shape[0]):,:,:] / (-1)
-    #outputs[(q1_xsize + inputs_list[3].shape[0]):,:,:] = outputs[(q1_xsize + inputs_list[3].shape[0]):,:,:] / (-(1562.5 / (25**2))) # Q_tot = -1562.5 and L_x=L_y=L_z=25 for Penning trap
+    #outputs[(q1_xsize + inputs_list[3].shape[0]):,:,:] = outputs[(q1_xsize + inputs_list[3].shape[0]):,:,:] / (-10)
+    outputs[(q1_xsize + inputs_list[3].shape[0]):,:,:] = outputs[(q1_xsize + inputs_list[3].shape[0]):,:,:] / (-(1562.5 / (25**2))) # Q_tot = -1562.5 and L_x=L_y=L_z=25 for Penning trap
 
     # Shuffle timestep
     inputs = inp

@@ -427,10 +427,19 @@ def p2g_g2p_nostencil_arrays(XP, DX, NG, L, dim,
                         Eyp += w * Ey[idx]
                         Ezp += w * Ez[idx]
 
+            if(testCase == 'penning'):
+                #Add quadrupole external electric field
+                Ex_ext = -(15 / L[0]) * (x - (L[0]/2))
+                Ey_ext = -(15 / L[1]) * (y - (L[1]/2))
+                Ez_ext =  (30 / L[2]) * (z - (L[2]/2))
+
             if return_Ep:
                 Ep = cp.stack([Exp, Eyp, Ezp], axis=0)
 
             if QM is not None:
-                a = QM * cp.stack([Exp, Eyp, Ezp], axis=0)
+                if(testCase == 'penning'):
+                    a = QM * cp.stack([(Exp + Ex_ext), (Eyp + Ey_ext), (Ezp + Ez_ext)], axis=0)
+                else:
+                    a = QM * cp.stack([Exp, Eyp, Ezp], axis=0)
         
         return rho, Ep, a

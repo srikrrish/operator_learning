@@ -148,6 +148,14 @@ def findsource():
     """
     return None
 
+def truncated_normal(N, mean, std, L):
+    """Gaussian truncated to [0, L), as IPPL's inverse transform sampling."""
+    X = cp.random.normal(mean, std, size=N)
+    bad = (X < 0) | (X >= L)
+    while bool(bad.any()):
+        X[bad] = cp.random.normal(mean, std, size=int(bad.sum()))
+        bad = (X < 0) | (X >= L)
+    return X
 
 def inv_trans_sampling_gpu(alpha, k, L, N, dim=1,
                            max_iter=12, tol=1e-12,
@@ -217,19 +225,24 @@ def inv_trans_sampling_gpu(alpha, k, L, N, dim=1,
             X[dim-1] = Xnew
 
         VP = cp.zeros([dim, N])
-        if(dim > 1):
-            VP[0] = cp.random.randn(1, N)
-        if(dim > 2):
-            VP[1] = cp.random.randn(1, N)
         if(label == 'tsi'):
             sigma = 0.1
+        elif(label=='bti'):
+            sigma = 1 / cp.sqrt(2)
+        
+        if(dim > 1):
+            VP[0] = sigma * cp.random.randn(1, N)
+            #VP[0] = cp.random.randn(1, N)
+        if(dim > 2):
+            VP[1] = sigma * cp.random.randn(1, N)
+            #VP[1] = cp.random.randn(1, N)
+        if(label == 'tsi'):
             Nhalf = int(N/2)
             VP[dim-1,:Nhalf] = -cp.pi/2.0 + sigma * cp.random.randn(Nhalf)
             VP[dim-1,Nhalf:] =  cp.pi/2.0 + sigma * cp.random.randn(Nhalf)
             #VP[dim-1,:Nhalf] = -(cp.pi/2.0)/sigma + cp.random.randn(Nhalf)
             #VP[dim-1,Nhalf:] =  (cp.pi/2.0)/sigma + cp.random.randn(Nhalf)
         elif(label=='bti'):
-            sigma = 1 / cp.sqrt(2)
             ninetypercent = int(0.9*N)
             rem = N - ninetypercent
             VP[dim-1,:ninetypercent] = sigma * cp.random.randn(ninetypercent)
@@ -248,7 +261,21 @@ def inv_trans_sampling_gpu(alpha, k, L, N, dim=1,
         VP = cp.random.randn(dim, N)
         XP = X
 
-    if(label != 'cyclotron'):
+    elif(label == 'penning'):
+        assert dim == 3, 'Penning trap test case only for 3D' 
+        sigmas = cp.array([3,1,4]) # Control shape of the bunch
+        X = cp.zeros([dim, N])
+        #X[0] = (Larr[0] / 2) + cp.random.randn(1, N) * sigmas[0]
+        #X[1] = (Larr[1] / 2) + cp.random.randn(1, N) * sigmas[1]
+        #X[2] = (Larr[2] / 2) + cp.random.randn(1, N) * sigmas[2]
+        X[0] = truncated_normal(N, Larr[0]/2, sigmas[0], Larr[0])
+        X[1] = truncated_normal(N, Larr[1]/2, sigmas[1], Larr[1])
+        X[2] = truncated_normal(N, Larr[2]/2, sigmas[2], Larr[2])
+        VP = cp.random.randn(dim, N)
+        XP = X
+
+    #if(label != 'cyclotron'):
+    if((label != 'cyclotron') and (label != 'penning')):
         # periodic wrap to [0,L)
         XP = cp.mod(X, Larr)
 

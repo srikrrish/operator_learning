@@ -14,6 +14,41 @@ import cupy as cp
 from operator_learning.utils.misc import readConfig
 from training.train_fno import FourierNeuralOperator
 from pic_plotter import PICVisualizer
+import plot_diagnostics as PD
+
+
+def _to_float(v):
+    """Scalar from a float, numpy/cupy 0-d array or torch tensor."""
+    if hasattr(v, "detach"):                                   # torch
+        v = v.detach().cpu().numpy()
+    elif hasattr(v, "get") and not isinstance(v, (np.ndarray, dict)):   # cupy
+        v = v.get()
+    return float(np.asarray(v))
+
+
+def save_diagnostics(fname, kind, args, time_acc_ms=None, **series):
+    """
+    Save the diagnostic time series of one run (NEOPIC prediction or reference)
+    to an npz file and return them as a dict that the plotting functions of
+    plot_diagnostics.py accept. Series that are None or empty (e.g. Ey and Ez
+    in 1D, momentum for the cyclotron case) are skipped.
+    """
+    rec = {}
+    for key, val in series.items():
+        if val is None or len(val) == 0:
+            continue
+        rec[key] = np.array([_to_float(v) for v in val], dtype=np.float64)
+    rec.update(kind=kind, ref=args.ref, nParticle=int(args.nParticle), dim=int(args.dim),
+               testCase=args.testCase, dt=float(args.dt), T=float(args.T),
+               kc=float(args.kc), alpha=float(args.alpha), runId=int(args.runId))
+    if time_acc_ms is not None:
+        rec["time_acc_ms"] = float(time_acc_ms)
+    if getattr(args, "tTrain", None) is not None:
+        rec["t_train"] = float(args.tTrain)
+    os.makedirs(os.path.dirname(str(fname)), exist_ok=True)
+    np.savez(fname, **{k: np.asarray(v) for k, v in rec.items()})
+    print(f"saved {fname}")
+    return rec
 
 # -----------------------------------------------------------------------------
 # Script parameters
@@ -56,6 +91,25 @@ parser.add_argument(
 parser.add_argument(
     "--ml_time_int", default="explicit", help="Choose explicit or implicit time integration for NEOPIC")
 parser.add_argument(
+    "--tTrain", default=None, type=float,
+    help="end of the training time horizon (t omega_p), shown in the diagnostic plots")
+parser.add_argument(
+    "--snapshots", action="store_true",
+    help="cyclotron: save binned density/field snapshots (fixed axes and colour scales)")
+parser.add_argument(
+    "--saveEvery", default=1, type=int,
+    help="write x, v (time-centred) and E of every saveEvery-th step to the HDF5 output")
+parser.add_argument(
+    "--snapEvery", default=100, type=int, help="snapshot interval in steps (the last step is always saved)")
+parser.add_argument(
+    "--snapExtent", default=0.3, type=float, help="snapshot half-width around the cloud centre")
+parser.add_argument(
+    "--snapBins", default=512, type=int, help="snapshot bins per direction")
+parser.add_argument(
+    "--snapRhoRange", default=None, type=float, nargs=2, help="colour range of the density n/N")
+parser.add_argument(
+    "--snapEmax", default=None, type=float, help="colour range +-Emax of the field snapshots")
+parser.add_argument(
     "--config", default=None, help="configuration file")
 args = parser.parse_args()
 
@@ -77,15 +131,20 @@ predOnly = args.predOnly
 testCase = args.testCase
 
 seed = 152
+#seed = 42
 torch.manual_seed(seed)
 np.random.seed(seed)
 cp.random.seed(seed)
 torch.cuda.manual_seed_all(seed)
 vis = PICVisualizer(args)
 
+EextPred = EextRef = None   # external potential energy (Penning trap only)
+cycPred, cycRef = {}, {}    # cyclotron: Lcan, Rrms, EerrPIC
 if checkpoint is not None:
     fno_model = FourierNeuralOperator(checkpoint=checkpoint, eval_only=True, device=device, data_class='pic')
     posPred, velPred, wPred, EnergyPred, EkPred, EpPred, pPred, ExpPred, EypPred, EzpPred, timePred = vis.picND(ml_acc=True, model=fno_model, data_file=config.data.dataFile)
+    EextPred = list(vis.Eext) if testCase == "penning" else None
+    cycPred = vis.cyclotron_series()
     phase_spacePred = None
 
 else:
@@ -104,6 +163,8 @@ else:
 
 if predOnly is False:
     posRef, velRef, wRef, EnergyRef, EkRef, EpRef, pRef, ExpRef, EypRef, EzpRef, timeRef = vis.picND(ml_acc=False)
+    EextRef = list(vis.Eext) if testCase == "penning" else None
+    cycRef = vis.cyclotron_series()
     phase_spaceRef = None
 else:
     EnergyRef = None
@@ -119,12 +180,25 @@ else:
     growth_rateRef = None
     speedup = 1
 
-energy = vis.energy(ERef=EnergyRef, EPred=EnergyPred, EkRef=EkRef, EpRef=EpRef, EkPred=EkPred, EpPred=EpPred)
-conserv_error = vis.conservation_errors(ERef=EnergyRef, EPred=EnergyPred, pRef=pRef, pPred=pPred)
-if ((testCase == "weakLandau") or (testCase == "strongLandau")):
-    landau_decay = vis.landau_decay(Ex=ExpRef, ExPred=ExpPred, Ey=EypRef, EyPred=EypPred, Ez=EzpRef, EzPred=EzpPred, label=testCase)
-elif ((testCase == "tsi") or (testCase == "bti")):
-    growth_rate = vis.instability(Ex=ExpRef, ExPred=ExpPred, Ey=EypRef, EyPred=EypPred, Ez=EzpRef, EzPred=EzpPred, label=testCase)
+# -----------------------------------------------------------------------------
+# Save diagnostics (prediction and reference in separate files), then plot them.
+# The figures can be remade later without rerunning, with plot_diagnostics.py.
+# -----------------------------------------------------------------------------
+diag_dir = vis.eval_dir / "diagnostics"
+tag = f"{testCase}_{args.ref}_N{args.nParticle}_run{args.runId}"
+recPred = recRef = None
+if checkpoint is not None:
+    recPred = save_diagnostics(diag_dir / f"pred_{tag}.npz", "pred", args, time_acc_ms=timePred,
+                               energy=EnergyPred, Ek=EkPred, Ep=EpPred, momentum=pPred,
+                               Ex=ExpPred, Ey=EypPred, Ez=EzpPred, Eext=EextPred, **cycPred)
+if predOnly is False:
+    recRef = save_diagnostics(diag_dir / f"ref_{tag}.npz", "ref", args, time_acc_ms=timeRef,
+                              energy=EnergyRef, Ek=EkRef, Ep=EpRef, momentum=pRef,
+                              Ex=ExpRef, Ey=EypRef, Ez=EzpRef, Eext=EextRef, **cycRef)
+
+figs = PD.plot_all(recPred, recRef, str(vis.eval_dir), tag=f"run{args.runId}", ext=args.imgExt)
+energy = figs["energy"]
+conserv_error = figs["conservation"]
 
 HEADER = """
 # FNO evaluation for PIC in {dim}D on {device}
