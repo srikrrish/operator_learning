@@ -91,14 +91,32 @@ parser.add_argument(
 parser.add_argument(
     "--ml_time_int", default="explicit", help="Choose explicit or implicit time integration for NEOPIC")
 parser.add_argument(
+    "--implicitTheta", default=0.5, type=float,
+    help="implicit NEOPIC: theta scheme, 0.5 = implicit midpoint (Crank-Nicolson), 1.0 = backward Euler")
+parser.add_argument(
+    "--implicitPrecond", default=True, type=lambda s: str(s).lower() not in ("0", "false", "no"),
+    help="implicit NEOPIC: physics-based block preconditioner for GMRES")
+parser.add_argument(
+    "--implicitVerbose", default=True, type=lambda s: str(s).lower() not in ("0", "false", "no"),
+    help="implicit NEOPIC: per-iteration output (True) or one summary line per step without extra JVPs (False)")
+parser.add_argument(
+    "--implicitRestart", default=10, type=int,
+    help="implicit NEOPIC: GMRES restart length (CuPy runs a full cycle before checking convergence)")
+parser.add_argument(
+    "--implicitGmresTol", default=None, type=float,
+    help="implicit NEOPIC: fixed relative GMRES tolerance; default: adaptive max(1e-6, min(1e-2, ||F_k||/||F_0||))")
+parser.add_argument(
+    "--implicitWp2", default=None, type=float,
+    help="implicit NEOPIC: plasma frequency^2 for the preconditioner (default: estimated each step)")
+parser.add_argument(
     "--tTrain", default=None, type=float,
     help="end of the training time horizon (t omega_p), shown in the diagnostic plots")
 parser.add_argument(
     "--snapshots", action="store_true",
     help="cyclotron: save binned density/field snapshots (fixed axes and colour scales)")
 parser.add_argument(
-    "--saveEvery", default=1, type=int,
-    help="write x, v (time-centred) and E of every saveEvery-th step to the HDF5 output")
+    "--saveEvery", default=0, type=int,
+    help="write x, v (time-centred) and E of every saveEvery-th step to the HDF5 output; <= 0 disables it")
 parser.add_argument(
     "--snapEvery", default=100, type=int, help="snapshot interval in steps (the last step is always saved)")
 parser.add_argument(

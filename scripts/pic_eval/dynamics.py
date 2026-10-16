@@ -114,84 +114,92 @@ def make_Jv(model, x_cp, DT, QM, Q, N, std, mean):
 
     return Jv
 
-def make_Jv_xv(model, y_cp, DT, QM, Q, N, std, mean):
+def _box_length(L):
+    """Domain length as a Python float (L may be a scalar or a 1-element array)."""
+    return float(cp.asarray(L).reshape(-1)[0])
 
-    x_cp = y_cp[:N]   # freeze x at Newton iterate
+
+def _min_image(d, Lf):
+    """Minimum-image displacement in a periodic box of length Lf."""
+    return d - Lf * cp.round(d / Lf)
+
+
+def _field_acc_torch(model, x, Lf, QM, Q, N, std, mean):
+    """
+    Acceleration a = (q/m) E_theta at the particles x (torch, physical units).
+    Uses the FIXED box normalization x / L (the same in the residual and in the JVP,
+    so that the Jacobian is the exact derivative of the residual).
+    """
+    x_norm = x / Lf
+    E = model.field(x_norm)
+    E = E * std + mean
+    E = E * (Q * N)
+    E = E - (torch.sum(E) / N)
+    return QM * E
+
+
+def make_Jv_xv(model, y_cp, y_old_cp, DT, QM, Q, N, std, mean, L, theta=0.5):
+    """
+    Matrix-free Jacobian of residual_xv (theta scheme) at the Newton iterate y.
+
+        R_x = dx/DT - ((1-theta) v_old + theta v)
+        R_v = (v - v_old)/DT - a(x_theta),   x_theta = x_old + theta*dx
+
+    dR_x = ddx/DT - theta*ddv
+    dR_v = ddv/DT - theta * (da/dx)(x_theta) ddx
+    """
+    Lf = _box_length(L)
+    x_cp = y_cp[:N]
+    x_old_cp = y_old_cp[:N]
+    dx = x_cp - x_old_cp                      # unwrapped iterate: true displacement
+    x_th = cp.mod(x_old_cp + theta * dx, Lf)
+    x_t = cp_to_torch(x_th)
+
+    def acc(x):
+        return _field_acc_torch(model, x, Lf, QM, Q, N, std, mean)
 
     def Jv(dy_cp):
-
-        dx_cp = dy_cp[:N]
-        dv_cp = dy_cp[N:]
-
-        # ---- x equation ----
-        #Jx = dx_cp - DT * dv_cp
-        Jx = (dx_cp / DT) - dv_cp
-
-        # ---- field JVP ----
-        #inputs = x_cp[None, None, :].copy()
-        #inputs[:, 0, :] = normalize_per_sample(inputs[:, 0, :])
-        #inputs = inputs.squeeze()
-
-        #inputs_dx = dx_cp[None, None, :].copy()
-        #inputs_dx[:, 0, :] = normalize_per_sample(inputs_dx[:, 0, :])
-        #inputs_dx = inputs_dx.squeeze()
-        #x_t = cp_to_torch(inputs)
-        #dx_t = cp_to_torch(inputs_dx)
-        x_t = cp_to_torch(x_cp)
-        dx_t = cp_to_torch(dx_cp)
-
-        def acc(x):
-            #xmin_global = 0.0
-            #xmax_global = 4.0 * torch.pi
-            #x_norm = (x - xmin_global) / (xmax_global - xmin_global)
-            inputs = x[None, None, :].clone()
-            inputs[:, 0, :] = normalize_per_sample_torch(inputs[:, 0, :])
-            inputs = inputs.squeeze()
-            E = model.field(inputs)
-            E = E * std + mean
-            E = E * (Q * N)
-            E = E - (torch.sum(E) / N)
-            return QM * E
-            #return E
-
-        _, da_dx = jvp(acc, (x_t,), (dx_t,))
-
-        da_dx_cp = torch_to_cp(da_dx)
-        #eps = 1e-5
-
-        ## random unit direction
-        #dx_cp_rand = cp.random.randn(N)
-        #dx_cp_rand = dx_cp_rand / cp.linalg.norm(dx_cp_rand)
-        #
-        ##x_t = cp_to_torch(x_cp)
-        #dx_t_rand = cp_to_torch(dx_cp_rand)
-        #
-        ## JVP
-        #_, jvp_val = jvp(acc, (x_t,), (dx_t_rand,))
-        #jvp_val_cp = torch_to_cp(jvp_val)
-        #
-        ## finite difference
-        #a0 = torch_to_cp(acc(x_t))
-        ##eps_dx_cp_rand = cp_to_torch(eps*dx_cp_rand)
-        ##a1 = torch_to_cp(acc(cp_to_torch(x_cp + eps*dx_cp_rand)))
-        #a1 = torch_to_cp(acc(x_t + eps*dx_t_rand))
-        #print("||a0|| =", cp.linalg.norm(a0))
-        #print("||a1|| =", cp.linalg.norm(a1))
-        #
-        #fd = (a1 - a0)/eps
-        #
-        #print("||JVP|| =", cp.linalg.norm(jvp_val_cp))
-        #print("||FD||  =", cp.linalg.norm(fd))
-        #print("relative error =",
-        #      cp.linalg.norm(jvp_val_cp-fd)/cp.linalg.norm(fd))
-        #breakpoint()
-        # ---- v equation ----
-        #Jv_eq = dv_cp - DT * da_dx_cp
-        Jv_eq = (dv_cp / DT) - da_dx_cp
-
+        ddx = dy_cp[:N]
+        ddv = dy_cp[N:]
+        _, da = jvp(acc, (x_t,), (cp_to_torch(theta * ddx),))
+        Jx = ddx / DT - theta * ddv
+        Jv_eq = ddv / DT - torch_to_cp(da)
         return cp.concatenate([Jx, Jv_eq]).reshape(-1)
 
     return Jv
+
+
+def make_precond_xv(N, DT, theta, wp2):
+    """
+    Physics-based preconditioner for the theta scheme.
+
+    For a (nearly) uniform plasma the 1D field response to particle displacements is
+    da/dx ~ -wp^2 (I - mean), so the Jacobian is approximated by the 2x2 block
+        [[1/DT, -theta], [theta*wp^2, 1/DT]]   on mean-free vectors,
+        [[1/DT, -theta], [0,          1/DT]]   on the mean (uniform) component,
+    which is inverted exactly. This removes the (wp*DT)^2 growth of the condition number.
+    """
+    a = 1.0 / DT
+    b = -theta
+    c = theta * wp2
+    det_f = a * a - b * c
+    det_m = a * a
+
+    def M(r):
+        rx = r[:N]
+        rv = r[N:]
+        mx = cp.mean(rx)
+        mv = cp.mean(rv)
+        fx = rx - mx
+        fv = rv - mv
+        xf = (a * fx - b * fv) / det_f
+        vf = (a * fv - c * fx) / det_f
+        xm = (a * mx - b * mv) / det_m
+        vm = (a * mv) / det_m
+        return cp.concatenate([xf + xm, vf + vm]).reshape(-1)
+
+    return M
+
 
 def residual(model, x_cp, x_old_cp, v_old_cp, DT, QM, Q, N, std, mean):
     #breakpoint()
@@ -209,41 +217,38 @@ def residual(model, x_cp, x_old_cp, v_old_cp, DT, QM, Q, N, std, mean):
 
     return (x_cp - x_old_cp - DT*v_old_cp - DT**2 * a).reshape(-1)
 
-def residual_xv(model, y_cp, y_old_cp, DT, QM, Q, N, std, mean):
+def residual_xv(model, y_cp, y_old_cp, DT, QM, Q, N, std, mean, L, theta=0.5):
+    """
+    Residual of the implicit theta scheme for (x^{n+1}, v^{n+1}) in a periodic box:
 
+        R_x = dx/DT - ((1-theta) v_old + theta v)
+        R_v = (v - v_old)/DT - a(x_theta),   x_theta = x_old + theta*dx (wrapped)
+
+    with dx = x - x_old the true displacement: x is kept unwrapped during the Newton
+    iteration and wrapped only after convergence.
+    theta = 0.5: implicit midpoint (Crank-Nicolson), second order, no numerical damping.
+    theta = 1.0: backward Euler (first order, damps oscillations).
+    """
+    Lf = _box_length(L)
     x_cp = y_cp[:N]
     v_cp = y_cp[N:]
-
     x_old_cp = y_old_cp[:N]
     v_old_cp = y_old_cp[N:]
 
-    # --- Torch input for field ---
-    #inputs = x_cp[None, None, :].copy()
-    #inputs[:, 0, :] = normalize_per_sample(inputs[:, 0, :])
-    #inputs = inputs.squeeze()
+    # x_cp is kept UNWRAPPED during the Newton iteration, so x - x_old is the true
+    # displacement (a minimum-image displacement is wrong once |v| DT > L/2).
+    dx = x_cp - x_old_cp
+    x_th = cp.mod(x_old_cp + theta * dx, Lf)
 
-    #x_t = cp_to_torch(inputs)
-    x_t = cp_to_torch(x_cp)
-    x_norm = (x_t - 0.0) / (4 * torch.pi)
-    #x_norm = x_t
+    with torch.no_grad():
+        a = torch_to_cp(_field_acc_torch(model, cp_to_torch(x_th), Lf, QM, Q, N, std, mean))
 
-    # --- field ---
-    E = torch_to_cp(model.field(x_norm))
-    E = E * std + mean
-    E = E * (Q * N)
-    E = E - (cp.sum(E) / N)
-
-    a = QM * E
-
-    # --- coupled residual ---
-    #Rx = x_cp - x_old_cp - DT * v_cp
-    #Rv = v_cp - v_old_cp - DT * a
-    Rx = (x_cp - x_old_cp) / DT - v_cp
+    Rx = dx / DT - ((1.0 - theta) * v_old_cp + theta * v_cp)
     Rv = (v_cp - v_old_cp) / DT - a
 
     return cp.concatenate([Rx, Rv]).reshape(-1)
 
-def residual_xv_torch(model, y_torch, y_old_torch, DT, QM, Q, N, std, mean):
+def residual_xv_torch(model, y_torch, y_old_torch, DT, QM, Q, N, std, mean, L):
 
     x_torch = y_torch[:N]
     v_torch = y_torch[N:]
@@ -270,7 +275,10 @@ def residual_xv_torch(model, y_torch, y_old_torch, DT, QM, Q, N, std, mean):
     a = QM * E
 
     # --- coupled residual ---
-    Rx = x_torch - x_old_torch - DT * v_torch
+    dx = x_torch - x_old_torch
+    dx = dx - L * torch.round(dx / L)        # torch.round in the torch version
+    Rx = dx - DT * v_torch
+    #Rx = x_torch - x_old_torch - DT * v_torch
     Rv = v_torch - v_old_torch - DT * a
 
     return torch.cat([Rx, Rv])
@@ -513,192 +521,167 @@ def implicit_push_move(model, xp, vp, DT,
 
 def newton_push_move_xv(model, xp, vp, DT,
                        QM, Q, N, L, dim, std, mean,
-                       tol_newton=1e-8,
+                       tol_newton=1e-5,
                        tol_gmres=1e-6,
-                       max_newton=3):
+                       max_newton=10,
+                       theta=0.5,
+                       precond=True,
+                       wp2=None,
+                       verbose=True,
+                       rtol_res=1e-4,
+                       rtol_dv=1e-6,
+                       restart=10,
+                       gmres_tol=None,
+                       gmres_max_cycles=10):
+    """
+    One implicit step (1D) with Newton-Krylov (GMRES, matrix-free JVP via autograd).
+
+    theta    : 0.5 implicit midpoint / Crank-Nicolson (default), 1.0 backward Euler.
+    precond  : use the physics-based block preconditioner (make_precond_xv).
+    wp2      : plasma frequency^2 for the preconditioner; None -> estimated each step
+               from the network's own response to a smooth displacement (one JVP).
+    restart  : GMRES restart length. CuPy's GMRES runs a full cycle of `restart`
+               iterations (JVPs) before checking convergence, so keep it short.
+    gmres_tol: relative tolerance of each linear solve. None (default) -> adaptive
+               (Eisenstat-Walker type): eta_k = max(1e-6, min(1e-2, ||F_k||/||F_0||)),
+               loose far from the solution and tightening as Newton converges.
+    gmres_max_cycles : maximum number of GMRES restart cycles per linear solve.
+    verbose  : True  -> per-iteration output (adds one extra JVP per Newton iteration
+                        for the true linear residual);
+               False -> one summary line per step, no extra JVPs (use for timings).
+    Stopping (float32-aware; absolute tolerances do not scale with N):
+      - ||F|| <= rtol_res * ||F_0||                (residual reduced enough)
+      - ||dv|| <= rtol_dv * ||v||  or  ||dv|| < tol_newton
+      - stagnation: once ||F|| < 1e-2 ||F_0||, stop if an iteration reduces ||F||
+        by less than a factor 2 (round-off floor of the float32 network reached).
+    """
+    Lf = _box_length(L)
 
     # ------------------------------------------------------------
     # flatten state
     # ------------------------------------------------------------
     x_old = xp.reshape(-1)
     v_old = vp.reshape(-1)
-
     y_old = cp.concatenate([x_old, v_old])
 
     # ------------------------------------------------------------
-    # initial guess (IMPORTANT: consistent with x-v system)
+    # initial guess: free-streaming predictor x_old + DT v_old
     # ------------------------------------------------------------
-    #x0 = x_old + DT * v_old
-    x0 = x_old.copy()
+    x0 = x_old + DT * v_old          # unwrapped; wrapped only after convergence
     v0 = v_old.copy()
     y = cp.concatenate([x0, v0])
-    
-    # ------------------------------------------------------------
-    # Newton loop
-    # ------------------------------------------------------------
+
+    r0_norm = None
+    r_prev = None
+    r_norm = None
+    n_res = 0          # residual evaluations (one network forward pass each)
+    n_jvp = 0          # JVPs inside GMRES (one network forward + tangent pass each)
+    n_cycles = 0       # GMRES callbacks (CuPy: restart cycles)
+    n_newton = 0       # Newton updates applied
+    stop = "max_newton"
+    w2_used = None
+    etas = []
     for k in range(max_newton):
 
-        # apply BC only to x-part
-        x = y[:N]
-        x = toPeriodicND(x, L, dim)
-        y[:N] = x
+        r = residual_xv(model, y, y_old, DT, QM, Q, N, std, mean, L, theta=theta)
+        n_res += 1
+        r_norm = float(cp.linalg.norm(r))
+        if r0_norm is None:
+            r0_norm = r_norm
+        if verbose:
+            print(f"Newton iter {k}: ||F|| = {r_norm:.6e}")
+        if k > 0 and r_norm <= rtol_res * r0_norm:
+            stop = "residual"
+            if verbose:
+                print(f"    converged: ||F||/||F0|| = {r_norm / r0_norm:.2e}")
+            break
+        if k > 0 and r_norm < 1e-2 * r0_norm and r_norm > 0.5 * r_prev:
+            stop = "stagnation"
+            if verbose:
+                print(f"    stopped: stagnation at ||F||/||F0|| = {r_norm / r0_norm:.2e} (round-off floor)")
+            break
+        r_prev = r_norm
 
-        # residual (2N vector)
-        r = residual_xv(model, y, y_old, DT, QM, Q, N, std, mean)
-        y_torch = cp_to_torch(y)
-        y_old_torch = cp_to_torch(y_old)
-        y_torch.requires_grad_(True)
-        J = jacobian(lambda y_torch:residual_xv_torch(model, y_torch, y_old_torch, DT, QM, Q, N, std, mean),y_torch)
-        J_np = J.detach().cpu().numpy()
-        plt.figure(figsize=(8,8))
-        plt.imshow(np.log10(np.abs(J_np)+1e-15))
-        plt.colorbar()
-        plt.tight_layout()
-        plt.savefig("jacobian_log.png", dpi=300)
-        plt.close()
-        Jxx = J_np[:N,:N]
-        Jxv = J_np[:N,N:]
-        Jvx = J_np[N:,:N]
-        Jvv = J_np[N:,N:]
-        fig, axs = plt.subplots(2,2, figsize=(10,10))
-
-        axs[0,0].imshow(Jxx)
-        axs[0,0].set_title("Jxx")
-        
-        axs[0,1].imshow(Jxv)
-        axs[0,1].set_title("Jxv")
-        
-        axs[1,0].imshow(Jvx)
-        axs[1,0].set_title("Jvx")
-        
-        axs[1,1].imshow(Jvv)
-        axs[1,1].set_title("Jvv")
-        
-        plt.tight_layout()
-        plt.savefig("jacobian_blocks.png", dpi=300)
-        plt.close()
-        u,s,vh = np.linalg.svd(J_np)
-        print(s.max()/s.min())
-        plt.semilogy(s)
-        plt.savefig("singular_values_full_J.png", dpi=300)
-        plt.close()
-        eigvals = np.linalg.eigvals(J_np)
-        plt.figure()
-        plt.scatter(eigvals.real,eigvals.imag)
-        plt.axvline(1)
-        plt.axis('equal')
-        plt.savefig("eigen_values.png", dpi=300)
-        plt.close()
-
-        breakpoint()
-        #r_norm = cp.linalg.norm(r[N:])
-        #dy_norm = cp.linalg.norm(dy[N:])
-        #print(f"Newton iter {k}: ||F|| = {float(dy_norm):.6e}")
-        #if r_norm < tol_newton:
-        #    break
-
-        b = -r.reshape(-1)
-
-        # --------------------------------------------------------
-        # Jacobian-vector product at current Newton state
-        # --------------------------------------------------------
-        Jv = make_Jv_xv(model, y, DT, QM, Q, N, std, mean)
-
-        #vr = cp.random.randn(2*N)
-        #vr /= cp.linalg.norm(vr)
-
-        #Jv_vr = Jv(vr)
-
-        #print("||vr||      =", cp.linalg.norm(vr))
-        #print("||Jv(vr)||  =", cp.linalg.norm(Jv_vr))
-        #print("ratio      =", cp.linalg.norm(Jv_vr) / cp.linalg.norm(vr))
-        #print("diff norm  =", cp.linalg.norm(Jv_vr - vr))
-        def matvec(dy):
-            out = Jv(dy)
-
-            #print(
-            #    "dy:", dy.shape,
-            #    "out:", out.shape,
-            #    "dy nan:", cp.isnan(dy).any(),
-            #    "out nan:", cp.isnan(out).any()
-            #)
-            return out
-
-        #def precond(r):
-
-        #    rx = r[:N]
-        #    rv = r[N:]
-
-        #    # block solve (very cheap!)
-        #    vx = rx
-        #    vv = rv + DT * rx
-
-        #    return cp.concatenate([vx, vv])
-
-        # IMPORTANT: 2N system now
+        Jv = make_Jv_xv(model, y, y_old, DT, QM, Q, N, std, mean, L, theta=theta)
         Ntot = y.shape[0]
 
-        A = LinearOperator(
-            (Ntot, Ntot),
-            matvec=matvec,
-            dtype=y.dtype
-        )
+        def Jv_counted(dy_cp):
+            nonlocal n_jvp
+            n_jvp += 1
+            return Jv(dy_cp)
 
-        #M = LinearOperator(
-        #    (Ntot, Ntot),
-        #    matvec=precond,
-        #    dtype=y.dtype
-        #)
+        A = LinearOperator((Ntot, Ntot), matvec=Jv_counted, dtype=y.dtype)
+
+        M = None
+        if precond:
+            # estimate wp^2 once per time step (first Newton iteration), then reuse it
+            w2 = wp2 if wp2 is not None else w2_used
+            if w2 is None:
+                # Rayleigh quotient of -da/dx on a smooth, mean-free displacement
+                dx_k = y[:N] - x_old
+                x_th = cp.mod(x_old + theta * dx_k, Lf)
+                u = cp.cos(2.0 * cp.pi * x_th / Lf)
+                u = u - cp.mean(u)
+                Ju = Jv(cp.concatenate([u, cp.zeros_like(u)]))
+                # v-part of J [u,0] is -theta * (da/dx) u
+                w2 = float(cp.dot(u, Ju[N:]) / (theta * cp.dot(u, u)))
+                w2 = max(w2, 0.0)
+                w2_used = w2
+                if verbose and k == 0:
+                    print(f"    preconditioner: estimated wp^2 = {w2:.4f}")
+            M = LinearOperator((Ntot, Ntot), matvec=make_precond_xv(N, DT, theta, w2), dtype=y.dtype)
 
         gmres_history = []
 
         def gmres_callback(residual_norm):
             gmres_history.append(float(residual_norm))
-            print(f"    GMRES iter {len(gmres_history)}: residual = {float(residual_norm):.6e}")
-        # --------------------------------------------------------
-        # GMRES solve (IMPORTANT: x0 must match shape)
-        # --------------------------------------------------------
+
+        if gmres_tol is None:
+            eta = max(1e-6, min(1e-2, r_norm / r0_norm))
+        else:
+            eta = float(gmres_tol)
+        etas.append(eta)
+
+        # CuPy: maxiter counts inner iterations in total (restart per cycle)
         dy, info = gmres(
             A,
-            b,
+            -r,
             x0=cp.zeros_like(y),
-            tol=tol_gmres,
-            restart=30,
-            maxiter=10,
+            tol=eta,
+            restart=restart,
+            maxiter=restart * gmres_max_cycles,
+            M=M,
             callback=gmres_callback,
             callback_type='pr_norm'
         )
-        lin_res = cp.linalg.norm(matvec(dy) - b)
-        print("true linear residual =", float(lin_res))
 
-        print(f"    GMRES info = {info}")
-        print(f"    ||dy|| = {float(cp.linalg.norm(dy)):.6e}")
-        #breakpoint()
-        #alpha = 1.0
-        #y_trial = y + alpha * dy
-        #r_trial = residual_xv(model, y_trial, y_old, DT, QM, Q, N, std, mean)
-
-        #while cp.linalg.norm(r_trial) > cp.linalg.norm(r):
-
-        #    alpha *= 0.5
-        #    y_trial = y + alpha * dy
-        #    r_trial = residual_xv(model, y_trial, y_old, DT, QM, Q, N, std, mean)
-
-        #y = y_trial
-        #print("alpha =", alpha)
-
-        omega = 1.0
-        y = y + omega * dy
-        dy_norm = cp.linalg.norm(dy[N:])
-        print(f"Newton iter {k}: ||dy|| = {float(dy_norm):.6e}")
-        if dy_norm < tol_newton:
+        n_cycles += len(gmres_history)
+        n_newton += 1
+        y = y + dy
+        dy_norm = float(cp.linalg.norm(dy[N:]))
+        v_norm = float(cp.linalg.norm(y[N:]))
+        if verbose:
+            lin_res = float(cp.linalg.norm(Jv(dy) + r))
+            print(f"    GMRES (tol {eta:.1e}): {len(gmres_history)} callback(s), info = {info}, "
+                  f"true linear residual = {lin_res:.3e}, ||dv|| = {dy_norm:.6e}")
+        if dy_norm < tol_newton or dy_norm <= rtol_dv * v_norm:
+            stop = "dv"
+            if verbose:
+                print(f"    converged: ||dv||/||v|| = {dy_norm / max(v_norm, 1e-30):.2e}")
             break
 
     # ------------------------------------------------------------
     # recover x, v
     # ------------------------------------------------------------
-    x = y[:N]
+    x = cp.mod(y[:N], Lf)
     v = y[N:]
+
+    if not verbose:
+        rel = (r_norm / r0_norm) if (r0_norm and r_norm is not None) else float('nan')
+        w2s = f", wp^2 = {w2_used:.4f}" if w2_used is not None else ""
+        etas_s = ("/".join(f"{e:.0e}" for e in etas)) if etas else "-"
+        print(f"implicit step: Newton {n_newton}, residual evals {n_res}, GMRES JVPs {n_jvp}, "
+              f"GMRES cycles {n_cycles}, gmres tol {etas_s}, ||F||/||F0|| = {rel:.2e}, stop = {stop}{w2s}")
 
     return x[None, :], v[None, :]
 

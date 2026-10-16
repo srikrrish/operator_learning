@@ -85,25 +85,25 @@ class PICVisualizer:
             self.rho_back = - self.Q * self.N / (self.L[0] * self.L[1] * self.L[2])
 
 
-        #if((self.testCase != 'cyclotron') and (self.ref != 'bh')):
-        #    self.xp0,self.vp0 = inv_trans_sampling_gpu(alpha=self.alpha, k=self.kn, L=self.Ln, N=self.N, dim=self.dim, label=self.testCase, ref=self.ref)
-        #else:
-        #Read from PEPC data file
-        output_keys_E = "Eout_bh"
-        output_keys_pos = "pos_bh"
-        output_keys_vel = "vel_bh"
-        #output_keys_label = "label_bh"
-        #file_path = "/p/scratch/pepcexa/muralikrishnan1/PEPC_cyclotron/Q_10x/Np_1million/data/particles/Reference_bh_1000000_cyclotron_unordered.h5"
-        file_path = "/p/project1/pepcexa/muralikrishnan1/operator_learning/scripts/error_scalings/2D_mini_apps_different_methods_test/model_evaluations/cyclotron/Reference_bh_1000000_cyclotron.h5"
-        #file_path = "/p/project1/pepcexa/muralikrishnan1/operator_learning/scripts/error_scalings/3D_mini_apps_test/model_evaluations/weakLandau/Reference_bh/Reference_bh_163840_weakLandau.h5"
-        with h5py.File(file_path, "r") as f:
-            self.xp0 = cp.array(f[output_keys_pos][0], dtype=cp.float32)
-            self.vp0 = cp.array(f[output_keys_vel][0], dtype=cp.float32)
-            #self.label0 = cp.array(f[output_keys_label][0])
+        if((self.testCase != 'cyclotron') and (self.ref != 'bh')):
+            self.xp0,self.vp0 = inv_trans_sampling_gpu(alpha=self.alpha, k=self.kn, L=self.Ln, N=self.N, dim=self.dim, label=self.testCase, ref=self.ref)
+        else:
+            #Read from PEPC data file
+            output_keys_E = "Eout_bh"
+            output_keys_pos = "pos_bh"
+            output_keys_vel = "vel_bh"
+            #output_keys_label = "label_bh"
+            #file_path = "/p/scratch/pepcexa/muralikrishnan1/PEPC_cyclotron/Q_10x/Np_1million/data/particles/Reference_bh_1000000_cyclotron_unordered.h5"
+            file_path = "/p/project1/pepcexa/muralikrishnan1/operator_learning/scripts/error_scalings/2D_mini_apps_different_methods_test/model_evaluations/cyclotron/Reference_bh_1000000_cyclotron.h5"
+            #file_path = "/p/project1/pepcexa/muralikrishnan1/operator_learning/scripts/error_scalings/3D_mini_apps_test/model_evaluations/weakLandau/Reference_bh/Reference_bh_163840_weakLandau.h5"
+            with h5py.File(file_path, "r") as f:
+                self.xp0 = cp.array(f[output_keys_pos][0], dtype=cp.float32)
+                self.vp0 = cp.array(f[output_keys_vel][0], dtype=cp.float32)
+                #self.label0 = cp.array(f[output_keys_label][0])
 
-        self.xp0 = self.xp0.swapaxes(-1,-2)
-        self.vp0 = self.vp0.swapaxes(-1,-2)
-        #self.label0 = self.label0.swapaxes(-1,-2).squeeze()
+            self.xp0 = self.xp0.swapaxes(-1,-2)
+            self.vp0 = self.vp0.swapaxes(-1,-2)
+            #self.label0 = self.label0.swapaxes(-1,-2).squeeze()
 
 
         print(f"Initial conditions done")
@@ -330,12 +330,15 @@ class PICVisualizer:
         # time-centred average (v^{n-1/2} + v^{n+1/2})/2 at the same time t_n as x^n and E^n
         # (at n = 0 the initial velocity v^0). The raw half-step velocity v^{n-1/2}
         # (v^0 at n = 0) is stored as well.
-        save_every = max(int(getattr(self.args, "saveEvery", 1)), 1)
+        # saveEvery <= 0 switches the particle output off
+        save_every_arg = int(getattr(self.args, "saveEvery", 0))
+        save_on = save_every_arg > 0
+        save_every = max(save_every_arg, 1)
         pending_save = None
         # start fresh output files (write_hdf5_step appends); never touch the Barnes-Hut input data
         out_files = [f"Inference_{self.N}_{self.testCase}.h5"] if ml_acc else \
                     ([f"Reference_{self.ref}_{self.N}_{self.testCase}.h5"] if self.ref in ('pic', 'pif') else [])
-        for fn in out_files:
+        for fn in (out_files if save_on else []):
             if os.path.exists(f'{self.eval_dir}/{fn}'):
                 os.remove(f'{self.eval_dir}/{fn}')
 
@@ -479,7 +482,7 @@ class PICVisualizer:
                             Efieldparticle[1] = Efieldparticle[1] - ((1/self.N) * cp.sum(Efieldparticle[1]))
                             Efieldparticle[2] = Efieldparticle[2] - ((1/self.N) * cp.sum(Efieldparticle[2]))
                         #
-                        if it % save_every == 0:
+                        if save_on and it % save_every == 0:
                             pending_save = dict(filename=f"Inference_{self.N}_{self.testCase}.h5", xp=xp.copy(), vp=vp.copy(),
                                                 Efieldparticle=Efieldparticle.copy(), pos_key="pos", vel_key="vel", E_key="Eout")
                         a = accelerateML(E=Efieldparticle, xp=xp, L=self.Ln, testCase=self.testCase, wp=wp, QM=self.QM)
@@ -488,7 +491,16 @@ class PICVisualizer:
                         e_end.record()
                         _ev_start.append(e_start); _ev_end.append(e_end)
                     else:
-                        xp, vp = newton_push_move_xv(model, xp, vp, self.DT, self.QM, self.Q, self.N, self.Ln, self.dim, data_output_std, data_output_mean)
+                        e_start = cp.cuda.Event(); e_end = cp.cuda.Event()
+                        e_start.record()
+                        xp, vp = newton_push_move_xv(model, xp, vp, self.DT, self.QM, self.Q, self.N, self.Ln, self.dim, data_output_std, data_output_mean,
+                                                     theta=float(getattr(self.args, "implicitTheta", 0.5)),
+                                                     precond=bool(getattr(self.args, "implicitPrecond", True)),
+                                                     wp2=getattr(self.args, "implicitWp2", None),
+                                                     verbose=bool(getattr(self.args, "implicitVerbose", True)),
+                                                     restart=int(getattr(self.args, "implicitRestart", 10)),
+                                                     gmres_tol=(None if getattr(self.args, "implicitGmresTol", None) is None
+                                                                else float(getattr(self.args, "implicitGmresTol"))))
                         #xp, vp = picard_push_move_xv(model, xp, vp, self.DT, self.QM, self.Q, self.N, self.Ln, self.dim, data_output_std, data_output_mean)
                         kinetic_energy = kinetic(vp, self.Q, self.QM, wp)
                         inputs = xp[None, :, :].copy() # [batch=1, channel=dim, particles]
@@ -500,6 +512,8 @@ class PICVisualizer:
                         Efieldparticle = Efieldparticle * ((self.Q * self.N))
                         #Subtract volume average of electric field for periodic compatibility
                         Efieldparticle = Efieldparticle - ((1/self.N) * cp.sum(Efieldparticle))
+                        e_end.record()
+                        _ev_start.append(e_start); _ev_end.append(e_end)
 
                 else:
                     e_start = cp.cuda.Event(); e_end = cp.cuda.Event()
@@ -559,7 +573,7 @@ class PICVisualizer:
                             phiHat, EHat = fieldInFourier(rhoHat=rhoHat, L=self.Ln, dim=self.dim, testCase=self.testCase, ref=self.ref, J=J, T1=T1, Q=self.Q, T2=T2)
                             # Interpolation fields (in Fourier space) -> particles
                             Efieldparticle, a = gatherFourier(XP=xp, EHat=EHat, SHat=SHat, QM=self.QM, L=self.Ln, dim=self.dim, testCase=self.testCase)
-                            if it % save_every == 0:
+                            if save_on and it % save_every == 0:
                                 pending_save = dict(filename=f"Reference_pif_{self.N}_{self.testCase}.h5", xp=xp.copy(), vp=vp.copy(),
                                                     Efieldparticle=Efieldparticle.copy(), pos_key="pos_pif", vel_key="vel_pif", E_key="Eout_pif")
                         elif(self.ref == 'bh'):
@@ -612,7 +626,7 @@ class PICVisualizer:
                     if snap_on and ((it % snap_every == 0) or (it == self.NT - 1)):
                         self.cyclotron_snapshot(xc, Emeth, Epic if check else None, it, snap_label)
 
-                if(self.ml_time_int != 'implicit'):
+                if(not ml_acc or (self.ml_time_int != 'implicit')):
                     if(self.testCase == 'cyclotron'):
                         if ml_acc:
                             vp, kinetic_energy = push(vp=vp, a=a, DT=self.DT, Q=self.Q, QM=self.QM, wp=wp, it=it, testCase=self.testCase, B0=self.B0)
