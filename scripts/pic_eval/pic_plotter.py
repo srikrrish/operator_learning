@@ -50,6 +50,7 @@ class PICVisualizer:
             self.k = np.array([args.kc, args.kc, args.kc])
         self.testCase = args.testCase
         self.v0AtMinusHalf = bool(getattr(args, "v0AtMinusHalf", False))
+        self.pifShapeOrder = int(getattr(args, "pifShapeOrder", 2))
         self.ml_time_int = args.ml_time_int
         if(self.testCase == 'cyclotron'):
             self.L = np.array([1, 1])
@@ -355,7 +356,7 @@ class PICVisualizer:
         _ev_start, _ev_end = [], []
 
         if((self.ref == 'pif') and (self.testCase != 'cyclotron')):
-            SHat = specKernel(NG=self.NG, L=self.Ln, dx=self.dxn, dim=self.dim)
+            SHat = specKernel(NG=self.NG, L=self.Ln, dx=self.dxn, dim=self.dim, order=self.pifShapeOrder)
 
         if(self.testCase == 'cyclotron'):
             if(self.ref == 'pif'):

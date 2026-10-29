@@ -97,6 +97,10 @@ parser.add_argument(
     help="explicit push: the initial velocity is v^{-1/2} as in PEPC (full first step); "
          "False: v^0, half first step (second-order Boris/leapfrog)")
 parser.add_argument(
+    "--pifShapeOrder", default=2, type=int,
+    help="periodic PIF reference: order of the shape function sinc^order in Fourier space, "
+         "2 = CIC, 4 = higher order (high-fidelity reference)")
+parser.add_argument(
     "--ml_time_int", default="explicit", help="Choose explicit or implicit time integration for NEOPIC")
 parser.add_argument(
     "--implicitTheta", default=0.5, type=float,
@@ -146,6 +150,9 @@ if args.config is not None:
         args.__dict__.update(**config["eval"])
     if "train" in config and "checkpoint" in config["train"]:
         args.checkpoint = config.train.checkpoint
+        if isinstance(args.checkpoint, str) and args.checkpoint != "None":
+            # relative to the working directory, not to trainDir
+            args.checkpoint = os.path.abspath(args.checkpoint)
         if "trainDir" in config.train:
             FourierNeuralOperator.TRAIN_DIR = config.train.trainDir
 
