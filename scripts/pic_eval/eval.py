@@ -93,6 +93,10 @@ parser.add_argument(
     help="HDF5 file of the Barnes-Hut (PEPC) reference run (pos_bh, vel_bh, Eout_bh); "
          "needed for testCase cyclotron (initial particles) and for ref bh")
 parser.add_argument(
+    "--v0AtMinusHalf", default=False, type=lambda s: str(s).lower() not in ("0", "false", "no"),
+    help="explicit push: the initial velocity is v^{-1/2} as in PEPC (full first step); "
+         "False: v^0, half first step (second-order Boris/leapfrog)")
+parser.add_argument(
     "--ml_time_int", default="explicit", help="Choose explicit or implicit time integration for NEOPIC")
 parser.add_argument(
     "--implicitTheta", default=0.5, type=float,

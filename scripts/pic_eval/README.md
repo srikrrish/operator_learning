@@ -24,9 +24,10 @@ Main `eval` options:
 | `testCase` | `weakLandau`, `strongLandau`, `tsi`, `bti`, `cyclotron` (2D), `penning` (3D) |
 | `ref` | reference method: `pic`, `pif` or `bh` (Barnes-Hut, read from `bhFile`) |
 | `nParticle`, `NG`, `T`, `dt`, `kc`, `alpha`, `Qm` | particles, grid points/modes per dimension, end time, time step, wave number, perturbation, charge-to-mass ratio |
+| `v0AtMinusHalf` | explicit push: `true` treats the initial velocity as v^{-1/2} (as in PEPC) and takes a full first step; `false` (default) treats it as v^0 and takes a half first step |
 | `ml_time_int` | `explicit` (leapfrog/Boris) or `implicit` (implicit midpoint, Newton-Krylov; 1D) |
 | `bhFile` | HDF5 output of the Barnes-Hut code PEPC (`pos_bh`, `vel_bh`, `Eout_bh`, particles in the same order at every step); required for `testCase: cyclotron` (initial particles) and for `ref: bh` |
-| `saveEvery` | write x, v and E every `saveEvery` steps to `Inference_*.h5` / `Reference_pif_*.h5` (explicit integration; not in 3D) |
+| `saveEvery` | write x, v and E every `saveEvery` steps to `Inference_*.h5` / `Reference_pif_*.h5` (explicit integration) |
 | `snapshots` | cyclotron: binned density and field snapshots |
 | `evalDir` | output directory |
 

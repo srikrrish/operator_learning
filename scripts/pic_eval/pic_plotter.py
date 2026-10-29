@@ -49,6 +49,7 @@ class PICVisualizer:
         else:
             self.k = np.array([args.kc, args.kc, args.kc])
         self.testCase = args.testCase
+        self.v0AtMinusHalf = bool(getattr(args, "v0AtMinusHalf", False))
         self.ml_time_int = args.ml_time_int
         if(self.testCase == 'cyclotron'):
             self.L = np.array([1, 1])
@@ -558,7 +559,7 @@ class PICVisualizer:
                 if(not ml_acc or (self.ml_time_int != 'implicit')):
                     if(self.testCase == 'cyclotron'):
                         if ml_acc:
-                            vp, kinetic_energy = push(vp=vp, a=a, DT=self.DT, Q=self.Q, QM=self.QM, wp=wp, it=it, testCase=self.testCase, B0=self.B0)
+                            vp, kinetic_energy = push(vp=vp, a=a, DT=self.DT, Q=self.Q, QM=self.QM, wp=wp, it=it, testCase=self.testCase, B0=self.B0, v0_at_minus_half=self.v0AtMinusHalf)
                             xp, wp = move(xp=xp, vp=vp, wp=wp, DT=self.DT, L=self.Ln, it=it)
                         else:
                             if(self.ref == "bh"):
@@ -570,14 +571,14 @@ class PICVisualizer:
                                     #For cases with external magnetic field average the kinetic energies instead of velocities as it is better
                                     kinetic_energy = (kinetic(vp, self.Q, self.QM) + kinetic(vp_old, self.Q, self.QM))/2
                             else:
-                                vp, kinetic_energy = push(vp=vp, a=a, DT=self.DT, Q=self.Q, QM=self.QM, wp=wp, it=it, testCase=self.testCase, B0=self.B0)
+                                vp, kinetic_energy = push(vp=vp, a=a, DT=self.DT, Q=self.Q, QM=self.QM, wp=wp, it=it, testCase=self.testCase, B0=self.B0, v0_at_minus_half=self.v0AtMinusHalf)
                                 xp, wp = move(xp=xp, vp=vp, wp=wp, DT=self.DT, L=self.Ln, it=it)
                     elif(self.testCase == 'penning'):
                         vp = push2(vp, a, self.DT, self.QM, self.B0)
                         kinetic_energy = kinetic(vp, self.Q, self.QM)
                     else:
                         if ml_acc or (self.ref != 'bh'):
-                            vp, kinetic_energy = push(vp=vp, a=a, DT=self.DT, Q=self.Q, QM=self.QM, wp=wp, it=it, testCase=self.testCase, B0=self.B0)
+                            vp, kinetic_energy = push(vp=vp, a=a, DT=self.DT, Q=self.Q, QM=self.QM, wp=wp, it=it, testCase=self.testCase, B0=self.B0, v0_at_minus_half=self.v0AtMinusHalf)
                             xp, wp = move(xp=xp, vp=vp, wp=wp, DT=self.DT, L=self.Ln, it=it)
                         else:
                             kinetic_energy = kinetic(vp, self.Q, self.QM)

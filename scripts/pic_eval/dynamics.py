@@ -246,7 +246,7 @@ def push(vp: cp.ndarray, a: cp.ndarray,
          DT: float, Q: float, 
          QM: float, wp: float,
          it: int, testCase: str,
-         B0: cp.array):
+         B0: cp.array, v0_at_minus_half: bool = False):
     """
     Update particle velocities using leapfrog integration and compute kinetic energy.
 
@@ -260,13 +260,14 @@ def push(vp: cp.ndarray, a: cp.ndarray,
         it (int): Current timestep index.
         testCase (str): Testcase label
         B0 (cp.array): External magnetic field for cyclotron test case
+        v0_at_minus_half (bool): the initial velocity is v^{-1/2} (full first step) instead of v^0 (half first step)
 
     Returns:
         vp_new (cp.ndarray): Updated particle velocities.
         kinetic_energy (float): Kinetic energy after update.
     """
-    #PEPC BH uses v^{-1/2} formulation for Boris so we are matching it here
-    if (it == 0):
+    #PEPC BH uses v^{-1/2} formulation for Boris; v0_at_minus_half matches it
+    if ((it == 0) and not v0_at_minus_half):
         DT_eff = DT / 2
     else:
         DT_eff = DT
