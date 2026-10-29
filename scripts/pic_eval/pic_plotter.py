@@ -78,8 +78,8 @@ class PICVisualizer:
             self.Q = self.L[0]/ (self.QM * self.N)                                 # Charge of a particle                                                    
             self.rho_back = - self.Q * self.N / self.L[0]                          # background rho     
         elif self.dim == 2:
-            #self.Q = self.L[0] * self.L[1] / (self.QM * self.N)  # PIF
-            self.Q = (self.L[0] * self.L[1] * 10) / (self.QM * self.N)  #PEPC
+            self.Q = self.L[0] * self.L[1] / (self.QM * self.N)  # PIF
+            #self.Q = (self.L[0] * self.L[1] * 10) / (self.QM * self.N)  #PEPC
             self.rho_back = - self.Q * self.N / (self.L[0] * self.L[1])
         else:
             self.Q = self.L[0] * self.L[1] * self.L[2] / (self.QM * self.N)  
@@ -87,14 +87,14 @@ class PICVisualizer:
        
         # full array of initial conditions is only needed for the reference solver
         # otherwise each GPU can only store its local shard of initial conditions
-        if args.predOnly == False:
-            xp0_full, vp0_full = inv_trans_sampling_gpu(alpha=self.alpha, k=self.kn, L=self.Ln, N=self.N, dim=self.dim, label=self.testCase, ref=self.ref)
-            self.xp0_full = xp0_full.copy()
-            self.vp0_full = vp0_full.copy()
-            self.xp0 = xp0_full[:, self.shard_start:self.shard_end].copy()
-            self.vp0 = vp0_full[:, self.shard_start:self.shard_end].copy()
-        else:
-            self.xp0, self.vp0 = inv_trans_sampling_gpu(alpha=self.alpha, k=self.kn, L=self.Ln, N=self.N_local, dim=self.dim, label=self.testCase, ref=self.ref)
+        #if args.predOnly == False:
+        #    xp0_full, vp0_full = inv_trans_sampling_gpu(alpha=self.alpha, k=self.kn, L=self.Ln, N=self.N, dim=self.dim, label=self.testCase, ref=self.ref)
+        #    self.xp0_full = xp0_full.copy()
+        #    self.vp0_full = vp0_full.copy()
+        #    self.xp0 = xp0_full[:, self.shard_start:self.shard_end].copy()
+        #    self.vp0 = vp0_full[:, self.shard_start:self.shard_end].copy()
+        #else:
+        self.xp0, self.vp0 = inv_trans_sampling_gpu(alpha=self.alpha, k=self.kn, L=self.Ln, N=self.N_local, dim=self.dim, label=self.testCase, ref=self.ref)
 
         print(f"[tp_rank {tp_rank}/{tp_size}] Initial conditions done: particles [{self.shard_start}, {self.shard_end}), xp0 shape {self.xp0.shape}")
         # Set matplotlib defaults (better figures)
@@ -144,10 +144,10 @@ class PICVisualizer:
             - Computes kinetic, potential, and field energies, as well as momentum conservation.
         """
         #xp, vp = self.xp0.copy(), self.vp0.copy()
-        if ml_acc:
-            xp, vp = self.xp0.copy(), self.vp0.copy() # sharded, N_local per rank
-        else:
-            xp, vp = self.xp0_full.copy(), self.vp0_full.copy() # full, self.N per rank
+        #if ml_acc:
+        xp, vp = self.xp0.copy(), self.vp0.copy() # sharded, N_local per rank
+        #else:
+        #xp, vp = self.xp0_full.copy(), self.vp0_full.copy() # full, self.N per rank
         wp = 1.0
 
         # Mean and Std of training output data
@@ -370,7 +370,8 @@ class PICVisualizer:
         cp.cuda.Stream.null.synchronize()   # here we do a single sync for the whole run to ensure all events happened
 
         times_acc = [cp.cuda.get_elapsed_time(s, e) for s, e in zip(_ev_start, _ev_end)]
-        time_acc_mean = np.round(np.mean(times_acc), 3)   # already in ms
+        #Take mean excluding first setp to exclude startup times
+        time_acc_mean = np.round(np.mean(times_acc[1:]), 3)   # already in ms
         print(f"Average acceleration time per iteration: {time_acc_mean:.3f} millisec")
 
         if ml_acc and model is not None:
@@ -510,7 +511,10 @@ class PICVisualizer:
 
         ind1 = np.argmin(np.abs(a - 2.5))
         theo_ref1 = np.exp(gamma1 * a)
-        theo_ref1 = (ExPred[ind1]/theo_ref1[ind1])*theo_ref1
+        if ExPred is not None:
+            theo_ref1 = (ExPred[ind1]/theo_ref1[ind1])*theo_ref1
+        else:
+            theo_ref1 = (Ex[ind1]/theo_ref1[ind1])*theo_ref1
         plt.plot(a, theo_ref1, label='Predicted Decay Rate', color='seagreen')
         if(label == 'strongLandau'):
             plt.plot(a, theo_ref2, label='Predicted Growth Rate', color='red')

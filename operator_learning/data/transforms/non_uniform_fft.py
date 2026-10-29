@@ -151,6 +151,9 @@ class Finufft:
         """
         # finufft type1 with batched sources: values (dv, N) -> output (dv, *n_modes)
         out = fin.functional.finufft_type1(pts, data_t, self._n_modes, eps=1e-6, modeord=1, isign=-1, gpu_method=3)
+        #Below permute only needed for models trained from Vandermonde matrix
+        #out = out.permute(0, 2, 1)
+        #out = fin.functional.finufft_type1(pts, data_t, self._n_modes, eps=1e-6, modeord=1, isign=-1)
         return out.reshape(data_t.shape[0], -1)  # (dv, modes_flat)
 
     def _inverse_single(self, pts, data_t):
@@ -160,6 +163,8 @@ class Finufft:
         returns (dv, N) complex
         """
         grid = data_t.reshape(data_t.shape[0], *self._n_modes)  # (dv, *n_modes)
+        #Below permute only needed for models trained from Vandermonde matrix
+        #grid = grid.permute(0, 2, 1)
         out = fin.functional.finufft_type2(pts, grid, eps=1e-6, modeord=1, isign=1)
         return out  # (dv, N)
 

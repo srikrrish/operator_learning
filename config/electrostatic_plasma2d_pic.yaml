@@ -1,5 +1,5 @@
 simu:
-  picFile: Datasets_2D_electrostatic_plasma/2D_PIF_5_miniapps_500k.h5
+  picFile: /p/project1/pepcexa/muralikrishnan1/operator_learning/scripts/error_scalings/2D_mini_apps_different_methods_test/training_data/2D_PIF_PIC_BH_5_mini_apps_unnormalized.h5
   nDim: 2
 
 sample:
@@ -15,7 +15,7 @@ data:
   yStep: 1
   zStep: 1
   seed: null
-  dataFile: Datasets_2D_electrostatic_plasma/PIF2D_5_miniapps_500k_QL_normalize.h5
+  dataFile: /p/project1/pepcexa/muralikrishnan1/operator_learning/scripts/error_scalings/2D_mini_apps_different_methods_test/training_data/PIF_PIC_BH_2D_5_mini_apps_QL_normalized.h5
   trainRatio: 0.8
   batchSize: 12        # Train Global Batch size
   val_batchSize: 1     # validation local Batch size 
@@ -62,15 +62,16 @@ loss:
   # absolute: false
   
 parallel_strategy:
-  ddp: true      # Distributed Data Parallel
-  tp : true      # Tensor Parallel(Only for PIC-DSE)
-  tp_size: 2     # must be divisible by nParticle          
+  ddp: false      # Distributed Data Parallel
+  tp : false      # Tensor Parallel(Only for PIC-DSE)
+  tp_size: 1     # must be divisible by nParticle          
   gpus_per_node: 4
 
 train:
   trainDir: PIF2D_5_miniapps_QL_normalize
   epochs: 250                     # nEpochs
-  checkpoint: None  
+  #checkpoint: /p/project1/pepcexa/muralikrishnan1/operator_learning/scripts/error_scalings/2D_mini_apps_different_methods_test/training/model/model_epoch300.pt
+  checkpoint: None
   saveInterval: 50
   disableTensorboard: true
   measure_power: 0             # measure power and energy using jpwr
@@ -78,41 +79,21 @@ train:
 eval:
   runId: 1
   imgExt: png
-  evalDir: eval2D_PIF_5_miniapps
+  evalDir: /p/scratch/pepcexa/muralikrishnan1/operator_learning/scripts/pic_eval/2D_NUFFT
   dim: 2
   NG : 32
   Vt: 1
-  nParticle: 500000
+  nParticle: 10240
   Qm : -1
   ref: pif
-  predOnly: true
+  #predOnly: true
 
 testCases:
-  bti: 
-    T: 60
-    dt: 0.05
-    kc: 0.21
-    alpha: 0.01
-  tsi:
-    T: 60
-    dt: 0.05
-    kc: 0.5
-    alpha: 0.01
   weakLandau:
-    T: 60
+    T: 1.0
     dt: 0.05
     kc: 0.5
     alpha: 0.05
-  strongLandau:
-    T: 60
-    dt: 0.05
-    kc: 0.5
-    alpha: 0.5
-  cyclotron:
-    T: 24
-    dt: 0.01
-    kc: 0.5
-    alpha: 0.01
   
 profile:
   enableProfiler: false

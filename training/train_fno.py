@@ -949,7 +949,7 @@ class FourierNeuralOperator:
     # Inference method
     # -------------------------------------------------------------------------
     def __call__(self, u0, nEval=1):
-        # enable_tf32_only_on_a100()
+        enable_tf32_only_on_a100()
         model = self.model.eval()
 
         if self.device == 'cpu':

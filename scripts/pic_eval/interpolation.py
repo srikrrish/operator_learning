@@ -145,16 +145,18 @@ def scatterFourier(XP, SHat, NG, N, Q, L, dim, testCase, wp=1):
                     n_modes=(2*NG,2*NG),
                     eps=1e-12,
                     isign=-1,
-                    modeord=1) / ((2 * L[0]) * (2 * L[1]))
+                    modeord=1,
+                    gpu_method=3) / ((2 * L[0]) * (2 * L[1]))
         else:
             rhoHat = Q * SHat * (cufinufft.nufft2d1(
                     XP[0] * 2 * cp.pi / L[0],
                     XP[1] * 2 * cp.pi / L[1],
                     0j + cp.zeros(N) + wp,
                     n_modes=(NG,NG),
-                    eps=1e-12,
+                    eps=1e-6,
                     isign=-1,
-                    modeord=1)) / (L[0] * L[1])
+                    modeord=1,
+                    gpu_method=3)) / (L[0] * L[1])
     else:
         rhoHat = Q * SHat * (cufinufft.nufft3d1(
                 XP[0] * 2 * cp.pi / L[0],
@@ -162,7 +164,7 @@ def scatterFourier(XP, SHat, NG, N, Q, L, dim, testCase, wp=1):
                 XP[2] * 2 * cp.pi / L[2],
                 0j + cp.zeros(N) + wp,
                 n_modes=(NG,NG,NG),
-                eps=1e-12,
+                eps=1e-6,
                 isign=-1,
                 modeord=1,
                 gpu_method=3)) / (L[0] * L[1] * L[2])
@@ -187,20 +189,20 @@ def gatherFourier(XP, EHat, SHat, QM, L, dim, testCase, wp=1):
 
         else:
             coeff1 = EHat[0] * SHat
-            Exp = cp.real(cufinufft.nufft2d2(XP[0] * 2 * cp.pi / L[0], XP[1] * 2 * cp.pi / L[1], coeff1, eps=1e-12, isign=1, modeord=1))
+            Exp = cp.real(cufinufft.nufft2d2(XP[0] * 2 * cp.pi / L[0], XP[1] * 2 * cp.pi / L[1], coeff1, eps=1e-6, isign=1, modeord=1))
             coeff2 = EHat[1] * SHat
-            Eyp = cp.real(cufinufft.nufft2d2(XP[0] * 2 * cp.pi / L[0], XP[1] * 2 * cp.pi / L[1], coeff2, eps=1e-12, isign=1, modeord=1))
+            Eyp = cp.real(cufinufft.nufft2d2(XP[0] * 2 * cp.pi / L[0], XP[1] * 2 * cp.pi / L[1], coeff2, eps=1e-6, isign=1, modeord=1))
             a1 = (QM / wp) * Exp
             a2 = (QM / wp) * Eyp
             Ep = cp.stack([Exp, Eyp], axis=0)
             a = cp.stack([a1, a2], axis=0)
     else:
         coeff1 = EHat[0] * SHat
-        Exp = cp.real(cufinufft.nufft3d2(XP[0] * 2 * cp.pi / L[0], XP[1] * 2 * cp.pi / L[1], XP[2] * 2 * cp.pi / L[2], coeff1, eps=1e-12, isign=1, modeord=1))
+        Exp = cp.real(cufinufft.nufft3d2(XP[0] * 2 * cp.pi / L[0], XP[1] * 2 * cp.pi / L[1], XP[2] * 2 * cp.pi / L[2], coeff1, eps=1e-6, isign=1, modeord=1))
         coeff2 = EHat[1] * SHat
-        Eyp = cp.real(cufinufft.nufft3d2(XP[0] * 2 * cp.pi / L[0], XP[1] * 2 * cp.pi / L[1], XP[2] * 2 * cp.pi / L[2], coeff2, eps=1e-12, isign=1, modeord=1))
+        Eyp = cp.real(cufinufft.nufft3d2(XP[0] * 2 * cp.pi / L[0], XP[1] * 2 * cp.pi / L[1], XP[2] * 2 * cp.pi / L[2], coeff2, eps=1e-6, isign=1, modeord=1))
         coeff3 = EHat[2] * SHat
-        Ezp = cp.real(cufinufft.nufft3d2(XP[0] * 2 * cp.pi / L[0], XP[1] * 2 * cp.pi / L[1], XP[2] * 2 * cp.pi / L[2], coeff3, eps=1e-12, isign=1, modeord=1))
+        Ezp = cp.real(cufinufft.nufft3d2(XP[0] * 2 * cp.pi / L[0], XP[1] * 2 * cp.pi / L[1], XP[2] * 2 * cp.pi / L[2], coeff3, eps=1e-6, isign=1, modeord=1))
         a1 = (QM / wp) * Exp
         a2 = (QM / wp) * Eyp
         a3 = (QM / wp) * Ezp
