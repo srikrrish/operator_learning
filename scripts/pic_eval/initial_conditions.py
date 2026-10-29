@@ -232,27 +232,20 @@ def inv_trans_sampling_gpu(alpha, k, L, N, dim=1,
         
         if(dim > 1):
             VP[0] = sigma * cp.random.randn(1, N)
-            #VP[0] = cp.random.randn(1, N)
         if(dim > 2):
             VP[1] = sigma * cp.random.randn(1, N)
-            #VP[1] = cp.random.randn(1, N)
         if(label == 'tsi'):
             Nhalf = int(N/2)
             VP[dim-1,:Nhalf] = -cp.pi/2.0 + sigma * cp.random.randn(Nhalf)
             VP[dim-1,Nhalf:] =  cp.pi/2.0 + sigma * cp.random.randn(Nhalf)
-            #VP[dim-1,:Nhalf] = -(cp.pi/2.0)/sigma + cp.random.randn(Nhalf)
-            #VP[dim-1,Nhalf:] =  (cp.pi/2.0)/sigma + cp.random.randn(Nhalf)
         elif(label=='bti'):
             ninetypercent = int(0.9*N)
             rem = N - ninetypercent
             VP[dim-1,:ninetypercent] = sigma * cp.random.randn(ninetypercent)
             VP[dim-1,ninetypercent:] =  4.0 + sigma * cp.random.randn(rem)
-            #VP[dim-1,:ninetypercent] = cp.random.randn(ninetypercent)
-            #VP[dim-1,ninetypercent:] =  4.0/sigma + cp.random.randn(rem)
 
     elif(label == 'cyclotron'):
         assert dim == 2, 'Cyclotron test case only for 2D' 
-        #sigmas = cp.array([Larr[0]/10,Larr[1]/30]) / cp.sqrt(2) # Control the shape of the beam
         sigmas = cp.array([Larr[0]/30,Larr[1]/10]) / cp.sqrt(2) # Control the shape of the beam
         X = cp.random.randn(dim, N) * sigmas
         if(ref == 'pic'):
@@ -265,16 +258,12 @@ def inv_trans_sampling_gpu(alpha, k, L, N, dim=1,
         assert dim == 3, 'Penning trap test case only for 3D' 
         sigmas = cp.array([3,1,4]) # Control shape of the bunch
         X = cp.zeros([dim, N])
-        #X[0] = (Larr[0] / 2) + cp.random.randn(1, N) * sigmas[0]
-        #X[1] = (Larr[1] / 2) + cp.random.randn(1, N) * sigmas[1]
-        #X[2] = (Larr[2] / 2) + cp.random.randn(1, N) * sigmas[2]
         X[0] = truncated_normal(N, Larr[0]/2, sigmas[0], Larr[0])
         X[1] = truncated_normal(N, Larr[1]/2, sigmas[1], Larr[1])
         X[2] = truncated_normal(N, Larr[2]/2, sigmas[2], Larr[2])
         VP = cp.random.randn(dim, N)
         XP = X
 
-    #if(label != 'cyclotron'):
     if((label != 'cyclotron') and (label != 'penning')):
         # periodic wrap to [0,L)
         XP = cp.mod(X, Larr)

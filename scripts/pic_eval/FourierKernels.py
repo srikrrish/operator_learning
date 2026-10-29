@@ -3,7 +3,6 @@ import cupyx.scipy.special as sp
 from scipy import special
 
 
-#def specKernel(NG, L, dx, dim, order=5):
 def specKernel(NG, L, dx, dim, order=2):
     Ka = cp.arange(1, NG // 2)
     Kb = Ka[::-1]
@@ -18,7 +17,6 @@ def specKernel(NG, L, dx, dim, order=2):
         SHat0 = cp.append([1], SHat0)
         SHat1 = (cp.sin(K * dx[1] / 2) / (K * dx[1] / 2)) ** order
         SHat1 = cp.append([1], SHat1)
-        #return cp.kron(SHat0, SHat1)
         return SHat0[:, None] * SHat1[None, :]
     else:
         SHat0 = (cp.sin(K * dx[0] / 2) / (K * dx[0] / 2)) ** order
@@ -27,7 +25,6 @@ def specKernel(NG, L, dx, dim, order=2):
         SHat1 = cp.append([1], SHat1)
         SHat2 = (cp.sin(K * dx[2] / 2) / (K * dx[2] / 2)) ** order
         SHat2 = cp.append([1], SHat2)
-        #breakpoint()
         return SHat0[:, None, None] * SHat1[None, :, None] * SHat2[None, None, :]
 
     
@@ -61,9 +58,6 @@ def freeSpaceKernelsPIF(NG, L):
     J = cp.fft.fftshift(wm) * cp.ones([NG * extension, 1])
     Kabsolute = cp.transpose(cp.sqrt(J**2 + cp.transpose(J)**2))
     Kabsolute[0,0] = 1  # avoid 0 on denominator
-    #SHat = (2 * sp.j1(r * Kabsolute) / (r * Kabsolute)) ** 2 
-    #SHat[0, 0] = 1
-    #SHat = SHat * (L[0] / NG) ** 2 / (r **2)
     SHat = cp.ones_like(Kabsolute)
     
     green1 = SHat * cp.fft.fftshift(green)

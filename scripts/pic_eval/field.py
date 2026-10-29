@@ -163,7 +163,6 @@ def field(rho, L, dim, J, T1, testCase, NG):
     elif dim == 2:
         if(testCase == 'cyclotron'):
             extension = 4
-            #rhoHat = cp.fft.fft2(rho, s=[extension*NG//2, extension*NG//2]) * 4
             rhoHat = cp.fft.fft2(rho, s=[extension*NG//2, extension*NG//2])
         else:
             rhoHat = cp.fft.fft2(rho)

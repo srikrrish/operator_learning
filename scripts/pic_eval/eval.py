@@ -89,6 +89,10 @@ parser.add_argument(
 parser.add_argument(
     "--ref", default="pic", help="Choose the reference numerical scheme pic or pif")
 parser.add_argument(
+    "--bhFile", default=None,
+    help="HDF5 file of the Barnes-Hut (PEPC) reference run (pos_bh, vel_bh, Eout_bh); "
+         "needed for testCase cyclotron (initial particles) and for ref bh")
+parser.add_argument(
     "--ml_time_int", default="explicit", help="Choose explicit or implicit time integration for NEOPIC")
 parser.add_argument(
     "--implicitTheta", default=0.5, type=float,
@@ -149,7 +153,6 @@ predOnly = args.predOnly
 testCase = args.testCase
 
 seed = 152
-#seed = 42
 torch.manual_seed(seed)
 np.random.seed(seed)
 cp.random.seed(seed)

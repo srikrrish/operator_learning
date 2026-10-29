@@ -1,13 +1,6 @@
 import torch
 import cupy as cp
 
-#def cp_to_torch(x):
-#    torch_device = torch.device("cuda")
-#    torch_dtype  = torch.get_default_dtype()
-#    return torch.utils.dlpack.from_dlpack(x.toDlpack())
-#
-#def torch_to_cp(x):
-#    return cp.fromDlpack(torch.utils.dlpack.to_dlpack(x))
 
 def cp_to_torch(x):
     torch_device = torch.device("cuda")

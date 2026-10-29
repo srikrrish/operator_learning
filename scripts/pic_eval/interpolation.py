@@ -220,8 +220,6 @@ def p2g_g2p_nostencil_arrays(XP, DX, NG, L, dim,
 
     Fully vectorized on GPU, works for 1D, 2D and 3D.
     """
-    #N = wp.shape[0]
-    #wp = wp.astype(dtype, copy=False)
 
     rho = None
     Ep = None

@@ -91,37 +91,9 @@ def accelerateML(E: cp.ndarray, xp: cp.ndarray, L: float, testCase: str, wp: flo
     
     return a
 
-def make_Jv(model, x_cp, DT, QM, Q, N, std, mean):
-
-    def Jv(dx_cp):
-        inputs = x_cp[None, None, :].copy() # [batch=1, channel=dim, particles]
-        inputs[:, 0, :] = normalize_per_sample(inputs[:, 0, :])
-        inputs = inputs.squeeze()
-        x_t = cp_to_torch(inputs)
-        dx_t = cp_to_torch(dx_cp)
-
-        def acc(x):
-            #E = model(x[None,None,:]).squeeze()
-            Efieldparticle = model.field(x)
-            Efieldparticle = Efieldparticle * std + mean
-            Efieldparticle = Efieldparticle * ((Q * N))
-            Efieldparticle = Efieldparticle - ((1/N) * torch.sum(Efieldparticle))
-            return QM * Efieldparticle
-
-        _, da_v = jvp(acc, (x_t,), (dx_t,))
-
-        return torch_to_cp(dx_t - DT**2 * da_v)
-
-    return Jv
-
 def _box_length(L):
     """Domain length as a Python float (L may be a scalar or a 1-element array)."""
     return float(cp.asarray(L).reshape(-1)[0])
-
-
-def _min_image(d, Lf):
-    """Minimum-image displacement in a periodic box of length Lf."""
-    return d - Lf * cp.round(d / Lf)
 
 
 def _field_acc_torch(model, x, Lf, QM, Q, N, std, mean):
@@ -201,22 +173,6 @@ def make_precond_xv(N, DT, theta, wp2):
     return M
 
 
-def residual(model, x_cp, x_old_cp, v_old_cp, DT, QM, Q, N, std, mean):
-    #breakpoint()
-    inputs = x_cp[None, None, :].copy() # [batch=1, channel=dim, particles]
-    inputs[:, 0, :] = normalize_per_sample(inputs[:, 0, :])
-    inputs = inputs.squeeze()
-    x_t = cp_to_torch(inputs)
-
-    #E = model(x_t[None,None,:]).squeeze()
-    Efieldparticle = torch_to_cp(model.field(x_t))
-    Efieldparticle = Efieldparticle * std + mean
-    Efieldparticle = Efieldparticle * ((Q * N))
-    Efieldparticle = Efieldparticle - ((1/N) * cp.sum(Efieldparticle))
-    a = QM * Efieldparticle
-
-    return (x_cp - x_old_cp - DT*v_old_cp - DT**2 * a).reshape(-1)
-
 def residual_xv(model, y_cp, y_old_cp, DT, QM, Q, N, std, mean, L, theta=0.5):
     """
     Residual of the implicit theta scheme for (x^{n+1}, v^{n+1}) in a periodic box:
@@ -247,41 +203,6 @@ def residual_xv(model, y_cp, y_old_cp, DT, QM, Q, N, std, mean, L, theta=0.5):
     Rv = (v_cp - v_old_cp) / DT - a
 
     return cp.concatenate([Rx, Rv]).reshape(-1)
-
-def residual_xv_torch(model, y_torch, y_old_torch, DT, QM, Q, N, std, mean, L):
-
-    x_torch = y_torch[:N]
-    v_torch = y_torch[N:]
-
-    x_old_torch = y_old_torch[:N]
-    v_old_torch = y_old_torch[N:]
-
-    # --- Torch input for field ---
-    #inputs = x_cp[None, None, :].copy()
-    #inputs[:, 0, :] = normalize_per_sample(inputs[:, 0, :])
-    #inputs = inputs.squeeze()
-
-    #x_t = cp_to_torch(inputs)
-    #x_t = cp_to_torch(x_cp)
-    x_norm = (x_torch - 0.0) / (4 * torch.pi)
-    #x_norm = x_t
-
-    # --- field ---
-    E = model.field(x_norm)
-    E = E * std + mean
-    E = E * (Q * N)
-    E = E - torch.mean(E)
-
-    a = QM * E
-
-    # --- coupled residual ---
-    dx = x_torch - x_old_torch
-    dx = dx - L * torch.round(dx / L)        # torch.round in the torch version
-    Rx = dx - DT * v_torch
-    #Rx = x_torch - x_old_torch - DT * v_torch
-    Rv = v_torch - v_old_torch - DT * a
-
-    return torch.cat([Rx, Rv])
 
 def to_3d(x):
     if x.shape[0] == 3:
@@ -345,7 +266,6 @@ def push(vp: cp.ndarray, a: cp.ndarray,
         kinetic_energy (float): Kinetic energy after update.
     """
     #PEPC BH uses v^{-1/2} formulation for Boris so we are matching it here
-    #if ((it == 0) and (testCase != 'cyclotron')):
     if (it == 0):
         DT_eff = DT / 2
     else:
@@ -379,32 +299,6 @@ def push(vp: cp.ndarray, a: cp.ndarray,
             else:
                 return new_vp, kinetic((vp + new_vp)/2, Q, QM, wp)
             
-    #if it == 0:
-    #    if((testCase == 'cyclotron') or (testCase == 'penning')):
-    #        #Ek = kinetic(vp, Q, QM, wp)
-    #        #DT_half = DT / 2
-    #        #Vm = vp + a * DT_half / 2
-    #        #Vprime = Vm + cp.cross(Vm, B0, axisa=0)[:, 0:2].T * QM * DT_half / 2
-    #        #Vp = Vm + cp.cross(Vprime, B0, axisa=0)[:, 0:2].T * QM * DT_half / (1 + (cp.linalg.norm(B0)*QM*DT_half/2) ** 2)
-    #        #new_vp = Vp + a * DT_half / 2
-    #        #vp = new_vp
-    #        return vp, Ek
-    #    else:
-    #        return vp + a * DT / 2, kinetic(vp, Q, QM, wp)
-
-    #else:
-    #    if((testCase == 'cyclotron') or (testCase == 'penning')):
-    #        #Vm = vp + a * DT / 2
-    #        #Vprime = Vm + cp.cross(Vm, B0, axisa=0)[:, 0:2].T * QM * DT / 2
-    #        #Vp = Vm + cp.cross(Vprime, B0, axisa=0)[:, 0:2].T * QM * DT / (1 + (cp.linalg.norm(B0)*QM*DT/2) ** 2)
-    #        #new_vp = Vp + a * DT / 2
-    #        #Ek = kinetic((vp + new_vp) / 2, Q, QM, wp)
-    #        #vp = new_vp
-    #        return vp, Ek
-    #    else:
-    #        return vp + a * DT, kinetic((vp + (vp + a * DT))/2, Q, QM, wp)
-
-
 def move(xp: cp.ndarray, vp: cp.ndarray,
         wp: float, DT: float, 
         L: float, it: int = None):
@@ -427,97 +321,6 @@ def move(xp: cp.ndarray, vp: cp.ndarray,
         return xp + vp * DT, 1
     else:
         return xp + vp * DT, wp + DT * findsource(xp + vp * DT / 2, vp, L, it + 0.5, DT)
-
-def implicit_push_move(model, xp, vp, DT,
-                       QM, Q, N, L, dim, std, mean, tol_newton=1e-8,
-                       tol_gmres=1e-6, max_newton=8):
-
-    x_old = xp.reshape(-1)
-    v_old = vp.reshape(-1)
-
-    # initial guess (explicit Euler)
-    x = x_old + DT * v_old
-    #x = x_old
-
-    for k in range(max_newton):
-        #Apply periodic BCs 
-        x = toPeriodicND(x, L, dim)
-
-        r = residual(model, x, x_old, v_old, DT, QM, Q, N, std, mean)
-
-        r_norm = cp.linalg.norm(r) 
-
-        print(f"Newton iter {k}: ||F|| = {float(r_norm):.6e}")
-        if r_norm < tol_newton:
-            break
-        #r = r / cp.linalg.norm(r)
-        b = -r
-
-        r = r.reshape(-1)
-        b = b.reshape(-1)
-
-        # build matrix-free operator around CURRENT x
-        Jv = make_Jv(model, x, DT, QM, Q, N, std, mean)
-
-        
-        def matvec(dx):
-            y = Jv(dx)
-
-            print("dx:", dx.shape,"y:", y.shape,
-                  "dx nan:", cp.isnan(dx).any(),
-                  "dx inf:", cp.isinf(dx).any(),
-                  "y nan:", cp.isnan(y).any(),
-                  "y inf:", cp.isinf(y).any())
-            return y
-
-        N = x.shape[0]
-        #def precond(v):
-        #    alpha = 1.0
-        #    return v / (1.0 + DT**2 * alpha)
-
-        gmres_history = []
-
-        def gmres_callback(residual_norm):
-            gmres_history.append(float(residual_norm))
-            print(f"    GMRES iter {len(gmres_history)}: residual = {float(residual_norm):.6e}")
-
-        A = LinearOperator(
-            (N, N),
-            matvec=matvec,
-            dtype=x.dtype
-        )
-        #M = LinearOperator((N, N), matvec=precond, dtype=x.dtype)
-        #breakpoint()
-        dx, info = gmres(
-            A,
-            b,
-            x0=x,
-            tol=tol_gmres,
-            restart=30,
-            maxiter=10,
-            callback = gmres_callback
-        )
-
-        print(f"    GMRES info = {info}")
-        print(f"    ||dx|| = {float(cp.linalg.norm(dx)):.6e}")
-
-        x = x + dx
-
-    # recover velocity
-    inputs = x[None, None, :].copy() # [batch=1, channel=dim, particles]
-    inputs[:, 0, :] = normalize_per_sample(inputs[:, 0, :])
-    inputs = inputs.squeeze()
-    x_t = cp_to_torch(inputs)
-    #E = model(x_t[None,None,:]).squeeze()
-    Efieldparticle = torch_to_cp(model.field(x_t))
-    Efieldparticle = Efieldparticle * std + mean
-    Efieldparticle = Efieldparticle * ((Q * N))
-    Efieldparticle = Efieldparticle - ((1/N) * cp.sum(Efieldparticle))
-    a = QM * Efieldparticle
-
-    v_new = v_old + DT * a
-
-    return x[None, :], v_new[None, :]
 
 def newton_push_move_xv(model, xp, vp, DT,
                        QM, Q, N, L, dim, std, mean,
@@ -691,8 +494,6 @@ def picard_push_move_xv(model, xp, vp, DT,
                          tol=1e-8, max_iter=20,
                          omega=1.0):
 
-    #x = xp.reshape(-1)
-    #v = vp.reshape(-1)
     x = xp.copy()
     v = vp.copy()
 
@@ -702,11 +503,8 @@ def picard_push_move_xv(model, xp, vp, DT,
         x = toPeriodicND(x, L, dim)
         inputs = x[None, :, :].copy()
         inputs[:, 0, :] = normalize_per_sample(inputs[:, 0, :])
-        #inputs = inputs.squeeze()
 
-        #x_t = cp_to_torch(inputs)
 
-        #E = torch_to_cp(model.field(x_t))
         E = model(inputs).squeeze()
         E = E * std + mean
         E = E * (Q * N)
@@ -720,7 +518,6 @@ def picard_push_move_xv(model, xp, vp, DT,
 
         iterx_norm = cp.linalg.norm(x_new - x)
         iterv_norm = cp.linalg.norm(v_new - v)
-        #print(f"Picard iter {k}: ||xnew-x|| = {float(iterx_norm):.6e}")
         print(f"Picard iter {k}: ||vnew-v|| = {float(iterv_norm):.6e}")
         # convergence check
         if iterv_norm < tol:
@@ -755,14 +552,8 @@ def toPeriodic(x: cp.ndarray, L: float, discrete: bool=False):
     x[out] = x[out] - L
     return x
 
-def toPeriodicNDOld(x: cp.ndarray, L: float, dim :int=2):
-    for i in range(dim):
-        x[i] = toPeriodic(x[i], L[i])
-    return x
-
 def toPeriodicND(x: cp.ndarray, L: float, dim :int=2):
     x = cp.mod(x, cp.asarray(L)[:, None])
-    #return x
     return x.reshape(-1)
 def toPeriodicND_old(x: cp.ndarray, L: float, dim :int=2):
     x = cp.mod(x, cp.asarray(L)[:, None])

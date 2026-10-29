@@ -1,5 +1,6 @@
 import os
 import sys
+import contextlib
 from pathlib import Path
 base_path = Path(__file__).resolve().parents[2]
 sys.path.append(str(base_path))
@@ -56,9 +57,7 @@ class PICVisualizer:
             self.L = np.array([25, 25, 25])
             self.B0 = cp.array([0,0,5]) # Constant external magnetic field
         else:
-            sigma = 1.0 #/ np.sqrt(2)
-            #sigma = 0.1 #/ np.sqrt(2)
-            #sigma = 1 / np.sqrt(2)
+            sigma = 1.0
             self.L = (2*np.pi)/(self.k * sigma) # Length of the container
             self.B0 = None
 
@@ -85,26 +84,23 @@ class PICVisualizer:
             self.rho_back = - self.Q * self.N / (self.L[0] * self.L[1] * self.L[2])
 
 
-        if((self.testCase != 'cyclotron') and (self.ref != 'bh')):
+        # Barnes-Hut reference run (PEPC output, particles in the same order at every step).
+        # It provides the initial particles for the cyclotron case and whenever ref == 'bh',
+        # and the reference fields and trajectories for ref == 'bh'.
+        self.bh_file = getattr(args, "bhFile", None)
+        self.use_bh_file = (self.testCase == 'cyclotron') or (self.ref == 'bh')
+        if self.use_bh_file and not self.bh_file:
+            raise ValueError("testCase 'cyclotron' and ref 'bh' need the Barnes-Hut reference file: set bhFile")
+
+        if not self.use_bh_file:
             self.xp0,self.vp0 = inv_trans_sampling_gpu(alpha=self.alpha, k=self.kn, L=self.Ln, N=self.N, dim=self.dim, label=self.testCase, ref=self.ref)
         else:
-            #Read from PEPC data file
-            output_keys_E = "Eout_bh"
-            output_keys_pos = "pos_bh"
-            output_keys_vel = "vel_bh"
-            #output_keys_label = "label_bh"
-            #file_path = "/p/scratch/pepcexa/muralikrishnan1/PEPC_cyclotron/Q_10x/Np_1million/data/particles/Reference_bh_1000000_cyclotron_unordered.h5"
-            file_path = "/p/project1/pepcexa/muralikrishnan1/operator_learning/scripts/error_scalings/2D_mini_apps_different_methods_test/model_evaluations/cyclotron/Reference_bh_1000000_cyclotron.h5"
-            #file_path = "/p/project1/pepcexa/muralikrishnan1/operator_learning/scripts/error_scalings/3D_mini_apps_test/model_evaluations/weakLandau/Reference_bh/Reference_bh_163840_weakLandau.h5"
-            with h5py.File(file_path, "r") as f:
-                self.xp0 = cp.array(f[output_keys_pos][0], dtype=cp.float32)
-                self.vp0 = cp.array(f[output_keys_vel][0], dtype=cp.float32)
-                #self.label0 = cp.array(f[output_keys_label][0])
+            with h5py.File(self.bh_file, "r") as f:
+                self.xp0 = cp.array(f["pos_bh"][0], dtype=cp.float32)
+                self.vp0 = cp.array(f["vel_bh"][0], dtype=cp.float32)
 
             self.xp0 = self.xp0.swapaxes(-1,-2)
             self.vp0 = self.vp0.swapaxes(-1,-2)
-            #self.label0 = self.label0.swapaxes(-1,-2).squeeze()
-
 
         print(f"Initial conditions done")
         # Set matplotlib defaults (better figures)
@@ -373,19 +369,6 @@ class PICVisualizer:
         output_keys_E = "Eout_bh"
         output_keys_pos = "pos_bh"
         output_keys_vel = "vel_bh"
-        #output_keys_label = "label_bh"
-        #file_path = "/p/scratch/pepcexa/muralikrishnan1/PEPC_cyclotron/Q_10x/Np_1million/data/particles/Reference_bh_1000000_cyclotron_unordered.h5"
-        file_path = "/p/project1/pepcexa/muralikrishnan1/operator_learning/scripts/error_scalings/2D_mini_apps_different_methods_test/model_evaluations/cyclotron/Reference_bh_1000000_cyclotron.h5"
-        #file_path = "/p/project1/pepcexa/muralikrishnan1/operator_learning/scripts/error_scalings/3D_mini_apps_test/model_evaluations/weakLandau/Reference_bh/Reference_bh_163840_weakLandau.h5"
-
-        #output_keys_E = "Eout_pic"
-        #output_keys_pos = "pos_pic"
-        #file_path = "/p/project1/pepcexa/muralikrishnan1/operator_learning/scripts/error_scalings/3D_mini_apps_test/Penning_trap_test/IC/Reference_pic_163840_penning.h5"
-        #with h5py.File(file_path, "r") as f:
-        #     Efieldparticle = cp.array(f[output_keys_E][0], dtype=cp.float32)
-        #    xpt = cp.array(f[output_keys_pos][0], dtype=cp.float32)
-
-        #Efieldparticle = Efieldparticle.swapaxes(-1,-2)
 
         if(self.testCase == 'penning'):
             if ml_acc and model is not None:
@@ -414,7 +397,6 @@ class PICVisualizer:
                     phi, Eg = field(rho=rho, L=self.Ln, dim=self.dim, J=J, T1=T1, testCase=self.testCase, NG=self.NG)
                     # Interpolation: grid -> particle
                     _, Efieldparticle, a = p2g_g2p_nostencil_arrays(XP=xp, DX=self.dxn, NG=self.NG, L=self.Ln, dim=self.dim, testCase=self.testCase, E=Eg, QM=self.QM)
-                    #self.write_hdf5_step(filename=f"Reference_pic_{self.N}_{self.testCase}.h5",xp=xp,vp=vp,Efieldparticle=Efieldparticle,pos_key="pos_pic",vel_key="vel_pic",E_key="Eout_pic")
                 elif(self.ref == 'pif'):
                     # Interpolation: particle -> Fourier space
                     rhoHat = scatterFourier(XP=xp, SHat=SHat, NG=self.NG, N=self.N, Q=self.Q, L=self.Ln, dim=self.dim, testCase=self.testCase)
@@ -422,11 +404,9 @@ class PICVisualizer:
                     phiHat, EHat = fieldInFourier(rhoHat=rhoHat, L=self.Ln, dim=self.dim, testCase=self.testCase, ref=self.ref, J=J, T1=T1, Q=self.Q, T2=T2)
                     # Interpolation fields (in Fourier space) -> particles
                     Efieldparticle, a = gatherFourier(XP=xp, EHat=EHat, SHat=SHat, QM=self.QM, L=self.Ln, dim=self.dim, testCase=self.testCase)
-                    #self.write_hdf5_step(filename=f"Reference_pif_{self.N}_{self.testCase}.h5",xp=xp,vp=vp,Efieldparticle=Efieldparticle,pos_key="pos_pif",vel_key="vel_pif",E_key="Eout_pif")
 
-
-
-        with h5py.File(file_path, "r") as f:
+        # the Barnes-Hut file is read step by step inside the loop
+        with (h5py.File(self.bh_file, "r") if self.use_bh_file else contextlib.nullcontext()) as f:
             for it in range(self.NT):
 
                 print(it)
@@ -436,9 +416,6 @@ class PICVisualizer:
 
                 if(self.testCase != 'cyclotron'):
                     #Apply periodic BCs
-                    #if ml_acc:
-                    #    xp = toPeriodicND(x=xp, L=self.Ln, dim=self.dim)
-                    #else:
                     xp = toPeriodicND_old(x=xp, L=self.Ln, dim=self.dim)
 
                 # Acceleration
@@ -486,8 +463,6 @@ class PICVisualizer:
                             pending_save = dict(filename=f"Inference_{self.N}_{self.testCase}.h5", xp=xp.copy(), vp=vp.copy(),
                                                 Efieldparticle=Efieldparticle.copy(), pos_key="pos", vel_key="vel", E_key="Eout")
                         a = accelerateML(E=Efieldparticle, xp=xp, L=self.Ln, testCase=self.testCase, wp=wp, QM=self.QM)
-                        #Ept = cp.array(f[output_keys_E][it], dtype=cp.float32)
-                        #Efieldparticle = Ept.swapaxes(-1,-2)
                         e_end.record()
                         _ev_start.append(e_start); _ev_end.append(e_end)
                     else:
@@ -501,7 +476,6 @@ class PICVisualizer:
                                                      restart=int(getattr(self.args, "implicitRestart", 10)),
                                                      gmres_tol=(None if getattr(self.args, "implicitGmresTol", None) is None
                                                                 else float(getattr(self.args, "implicitGmresTol"))))
-                        #xp, vp = picard_push_move_xv(model, xp, vp, self.DT, self.QM, self.Q, self.N, self.Ln, self.dim, data_output_std, data_output_mean)
                         kinetic_energy = kinetic(vp, self.Q, self.QM, wp)
                         inputs = xp[None, :, :].copy() # [batch=1, channel=dim, particles]
                         inputs[:, 0, :] = normalize_per_sample(inputs[:, 0, :])
@@ -522,39 +496,14 @@ class PICVisualizer:
                         data_E = f[output_keys_E]
                         data_pos = f[output_keys_pos]
                         data_vel = f[output_keys_vel]
-                        #data_label = f[output_keys_label]
                         Efield_pepc = cp.array(data_E[it], dtype=cp.float32)
                         pos_pepc = cp.array(data_pos[it+1], dtype=cp.float32)
                         vel_pepc = cp.array(data_vel[it+1], dtype=cp.float32)
                         pos_pepc = pos_pepc.swapaxes(-1,-2)
                         vel_pepc = vel_pepc.swapaxes(-1,-2)
-                        #label_pepc = cp.array(data_label[it+1])
                         Efield_pepc = Efield_pepc.swapaxes(-1,-2)
-                        #label_pepc = label_pepc.swapaxes(-1,-2).squeeze()
                         vp_old = vp.copy()
-
-                        #sort_idx = cp.argsort(label_pepc)
-                        #label_sorted = label_pepc[sort_idx]
-                        ## Find where each particle from timestep 0
-                        ## occurs in current timestep
-                        #idx = cp.searchsorted(label_sorted, self.label0)
-                        ## Check that every particle was found
-                        #valid = (
-                        #    (idx < label_sorted.size) &
-                        #    (label_sorted[idx] == self.label0)
-                        #)
-                        #print("Matched:", int(cp.sum(valid)), "/", self.label0.size)
-                        #vel_sorted = vel_pepc[:, sort_idx]
-                        #pos_sorted = pos_pepc[:, sort_idx]
-                        #Efield_sorted = Efield_pepc[:, sort_idx]
-                        ## Actual attributes reordered to correspond
-                        ## to the particle ordering at t=0
-                        #vel_actual = vel_sorted[:, idx]
-                        #pos_actual = pos_sorted[:, idx]
-                        #Efield_actual = Efield_sorted[:, idx]
-                        #Efieldparticle = Efield_actual
                         Efieldparticle = Efield_pepc
-                        #self.write_hdf5_step(filename=f"Reference_{self.ref}_{self.N}_{self.testCase}_corrected.h5",xp=xp,vp=vp,Efieldparticle=Efieldparticle,pos_key="pos_bh",vel_key="vel_bh",E_key="Eout_bh")
                     else:
                         if(self.ref == 'pic'):
                             # Interpolation: particle -> grid
@@ -563,9 +512,6 @@ class PICVisualizer:
                             phi, Eg = field(rho=rho, L=self.Ln, dim=self.dim, J=J, T1=T1, testCase=self.testCase, NG=self.NG)
                             # Interpolation: grid -> particle
                             _, Efieldparticle, a = p2g_g2p_nostencil_arrays(XP=xp, DX=self.dxn, NG=self.NG, L=self.Ln, dim=self.dim, testCase=self.testCase, E=Eg, QM=self.QM)
-                            #self.write_hdf5_step(filename=f"Reference_pic_{self.N}_{self.testCase}.h5",xp=xp,vp=vp,Efieldparticle=Efieldparticle,pos_key="pos_pic",vel_key="vel_pic",E_key="Eout_pic")
-                            #Ept = cp.array(f[output_keys_E][it], dtype=cp.float32)
-                            #Efieldparticle = Ept.swapaxes(-1,-2)
                         elif(self.ref == 'pif'):
                             # Interpolation: particle -> Fourier space
                             rhoHat = scatterFourier(XP=xp, SHat=SHat, NG=self.NG, N=self.N, Q=self.Q, L=self.Ln, dim=self.dim, testCase=self.testCase)
@@ -581,23 +527,6 @@ class PICVisualizer:
                             Efieldparticle = Ept.swapaxes(-1,-2)
                     e_end.record()
                     _ev_start.append(e_start); _ev_end.append(e_end)
-
-                #if(self.testCase == 'cyclotron'):
-                #    if (it%100==0) or (it==(self.NT-1)):
-                #        if ml_acc:
-                #            if(self.ref == 'pif' or self.ref == 'bh'):
-                #                self.visualize_Efield(xp.get(), Efieldparticle.get(), it, f"Efield_neopic_{it}.png")
-                #                self.field2D_histogram(xp.get(), NG=512, output_filename=f"rho_neopic_{it}.png")
-                #            else:
-                #                self.visualize_Efield((xp-self.Ln[0]/2).get(), Efieldparticle.get(), it, f"Efield_neopic_{it}.png")
-                #                self.field2D_histogram((xp-self.Ln[0]/2).get(), NG=512, output_filename=f"rho_neopic_{it}.png")
-                #        else:
-                #            if(self.ref == 'pif' or self.ref == 'bh'):
-                #                self.visualize_Efield(xp.get(), Efieldparticle.get(), it, f"Efield_{self.ref}_{it}.png")
-                #                self.field2D_histogram(xp.get(), NG=512, output_filename=f"rho_{self.ref}_{it}.png")
-                #            else:
-                #                self.visualize_Efield((xp-self.Ln[0]/2).get(), Efieldparticle.get(), it, f"Efield_{self.ref}_{it}.png")
-                #                self.field2D_histogram((xp-self.Ln[0]/2).get(), NG=512, output_filename=f"rho_{self.ref}_{it}.png")
 
                 # External potential energy of the Penning trap (added to the total energy).
                 # Evaluated here, at the positions where the field was just computed and
@@ -635,9 +564,6 @@ class PICVisualizer:
                             if(self.ref == "bh"):
                                 vp = vel_pepc
                                 xp = pos_pepc
-                                #vp = vel_actual
-                                #xp = pos_actual
-                                #Efieldparticle = Efield_actual
                                 if(it == 0):
                                     kinetic_energy = kinetic(vp_old, self.Q, self.QM)
                                 else:
@@ -907,13 +833,13 @@ class PICVisualizer:
             Output HDF5 file.
 
         xp : cupy.ndarray
-            Particle positions of shape [2, Np].
+            Particle positions of shape [dim, Np].
 
         vp : cupy.ndarray
-            Particle velocities of shape [2, Np].
+            Particle velocities of shape [dim, Np].
 
         Efieldparticle : cupy.ndarray
-            Electric field at particle positions of shape [2, Np].
+            Electric field at particle positions of shape [dim, Np].
 
         pos_key : str
             Dataset name for particle positions.
@@ -925,7 +851,7 @@ class PICVisualizer:
             Dataset name for electric field.
         """
 
-        # Convert to NumPy and transpose to [Np,2]
+        # Convert to NumPy and transpose to [Np, dim]
         pos = cp.asnumpy(xp.T.astype(cp.float32))
         vel = cp.asnumpy(vp.T.astype(cp.float32))
         E = cp.asnumpy(Efieldparticle.T.astype(cp.float32))
@@ -938,31 +864,15 @@ class PICVisualizer:
 
             if first_time:
 
-                Np = pos.shape[0]
-
-                f.create_dataset(
-                    pos_key,
-                    data=pos[np.newaxis, :, :],
-                    maxshape=(None, Np, 2),
-                    chunks=(1, Np, 2),
-                    compression="gzip",
-                )
-
-                f.create_dataset(
-                    vel_key,
-                    data=vel[np.newaxis, :, :],
-                    maxshape=(None, Np, 2),
-                    chunks=(1, Np, 2),
-                    compression="gzip",
-                )
-
-                f.create_dataset(
-                    E_key,
-                    data=E[np.newaxis, :, :],
-                    maxshape=(None, Np, 2),
-                    chunks=(1, Np, 2),
-                    compression="gzip",
-                )
+                # [1, Np, dim]; maxshape and chunks follow the array shape, so 1D, 2D and 3D work
+                for key, arr in ((pos_key, pos), (vel_key, vel), (E_key, E)):
+                    f.create_dataset(
+                        key,
+                        data=arr[np.newaxis, :, :],
+                        maxshape=(None,) + arr.shape,
+                        chunks=(1,) + arr.shape,
+                        compression="gzip",
+                    )
 
                 for k, arr in extra_np.items():
                     f.create_dataset(
@@ -1016,18 +926,12 @@ class PICVisualizer:
 
         # --- 2. Create the 2x2 plot grid ---
         fig, axes = plt.subplots(1, 2, figsize=(12, 6), dpi=150)
-        #fig.suptitle(f'Spatial E-Field Comparison for Timestep {timestep}', fontsize=20)
 
         # --- 3. Plot the Ex comparison (Top Row) ---
         # Predicted Ex
         sc00 = axes[0].scatter(positions[0], positions[1], c=efield[0],
                                    cmap=cmap, vmin=vmin_x, vmax=vmax_x, s=marker_size, rasterized=True)
         axes[0].set_title('$E_x$', fontsize=14)
-
-        # True Ex
-        #sc01 = axes[0, 1].scatter(true_positions[:, 0], true_positions[:, 1], c=true_efield[:, 0],
-        #                           cmap=cmap, vmin=vmin_x, vmax=vmax_x, s=marker_size, rasterized=True)
-        #axes[0, 1].set_title('Ground Truth $E_x$', fontsize=14)
 
         # Add a single colorbar for the Ex row
         fig.colorbar(sc00, ax=axes[0], label='$E_x$ Value', fraction=0.046, pad=0.04)
@@ -1037,11 +941,6 @@ class PICVisualizer:
         sc01 = axes[1].scatter(positions[0], positions[1], c=efield[1],
                                    cmap=cmap, vmin=vmin_y, vmax=vmax_y, s=marker_size, rasterized=True)
         axes[1].set_title('$E_y$', fontsize=14)
-
-        # True Ey
-        #sc11 = axes[1, 1].scatter(true_positions[:, 0], true_positions[:, 1], c=true_efield[:, 1],
-        #                           cmap=cmap, vmin=vmin_y, vmax=vmax_y, s=marker_size, rasterized=True)
-        #axes[1, 1].set_title('Ground Truth $E_y$', fontsize=14)
 
         # Add a single colorbar for the Ey row
         fig.colorbar(sc01, ax=axes[1], label='$E_y$ Value', fraction=0.046, pad=0.04)
@@ -1063,11 +962,7 @@ class PICVisualizer:
             NG=[NG,NG]
         x = np.linspace(0, NG[0]-1, NG[0]).astype(int).tolist()
         y = np.linspace(0, NG[0]-1, NG[0]).astype(int).tolist()
-        #values = []
-        #plt.figure()
-        #ax = mpl_toolkits.mplot3d.Axes3D(fig)
         x, y = np.meshgrid(x, y)
-        #ax.plot_surface(x, y, field, cmap='cool')
         fig, ax = plt.subplots(figsize=(6,5))
         pcm = ax.pcolormesh(x, y, field, shading='auto', cmap='viridis')
         fig.colorbar(pcm, ax=ax, label='Charge density')
@@ -1105,7 +1000,6 @@ class PICVisualizer:
         filename = self._img_path(output_filename)
         fig.savefig(f'{self.eval_dir}/{filename}', dpi=200)
         plt.close()
-        #rho_norm = matplotlib.colors.Normalize(vmin=0, vmax=rho_vmax)
 
     def instability(self, Ex = None, ExPred = None, Ey = None, EyPred = None, Ez = None, EzPred = None, label='tsi'):
         pred, ref = self._records(dict(Ex=Ex, Ey=Ey, Ez=Ez), dict(Ex=ExPred, Ey=EyPred, Ez=EzPred))
